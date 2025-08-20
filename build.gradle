@@ -1,0 +1,197 @@
+plugins {
+    id 'java'
+    id 'java-library'
+    id 'maven-publish'
+    id 'org.jreleaser' version '1.19.0'
+    id 'distribution'
+}
+
+
+import org.jreleaser.gradle.plugin.JReleaserExtension
+import org.jreleaser.model.Active
+
+group = 'com.codelry.util.ycsb'
+version = '0.18.1'
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'org.apache.htrace:htrace-core4:4.2.0-incubating'
+    implementation 'com.fasterxml.jackson.core:jackson-databind:2.19.2'
+    implementation 'com.fasterxml.jackson.core:jackson-core:2.19.2'
+    implementation 'org.hdrhistogram:HdrHistogram:2.2.2'
+    implementation 'commons-cli:commons-cli:1.10.0'
+    implementation 'org.slf4j:slf4j-api:2.0.17'
+    implementation 'org.apache.logging.log4j:log4j-slf4j2-impl:2.25.1'
+    testImplementation 'org.testng:testng:7.9.0'
+}
+
+java {
+    withSourcesJar()
+    withJavadocJar()
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(11)
+    }
+}
+
+tasks.compileJava {
+    options.release.set(8)
+}
+
+tasks.register('updateAppVersionProperties') {
+    doLast {
+        def appPropertiesFile = file("src/main/resources/project.properties")
+        def properties = new Properties()
+        if (appPropertiesFile.exists()) {
+            appPropertiesFile.withInputStream { properties.load(it) }
+        }
+        properties.setProperty("version", project.version.toString())
+        appPropertiesFile.withWriter { properties.store(it, null) }
+    }
+}
+
+processResources.dependsOn updateAppVersionProperties
+
+sourceSets {
+    test {
+        resources {
+            srcDir 'src/test/conf'
+            include '**/*'
+        }
+    }
+}
+
+test {
+    useTestNG()
+    classpath = sourceSets.test.runtimeClasspath
+}
+
+tasks.register('printTestClasspath') {
+    doLast {
+        println "Test Classpath:"
+        sourceSets.test.runtimeClasspath.each { file ->
+            println file.absolutePath
+        }
+    }
+}
+
+tasks.withType(Test).configureEach {
+    testLogging {
+        events "passed", "skipped", "failed"
+        showStandardStreams = true
+        exceptionFormat "full"
+    }
+}
+
+tasks.withType(Javadoc).configureEach {
+    options.encoding = "UTF-8"
+    def std = options as StandardJavadocDocletOptions
+    std.tags(
+            'apiNote:a:"API Note:"',
+            'implSpec:a:"Implementation Requirements:"',
+            'implNote:a:"Implementation Note:"'
+    )
+    std.addBooleanOption('Xdoclint:none', true)
+    std.addBooleanOption('html5', true)
+}
+
+publishing {
+    publications {
+        create("maven", MavenPublication) {
+            from components.java
+            pom {
+                name = project.name
+                description = "Yahoo Cloud Serving Benchmark"
+                url = "https://github.com/mminichino/ycsb-core"
+                licenses {
+                    license {
+                        name = "Apache License, Version 2.0"
+                        url = "https://www.apache.org/licenses/LICENSE-2.0.txt"
+                    }
+                }
+                developers {
+                    developer {
+                        id = "mminichino"
+                        name = "Michael Minichino"
+                    }
+                    developer {
+                        id = "allanbank"
+                        name = "Robert J. Moore"
+                        email = "robert.j.moore@allanbank.com"
+                    }
+                    developer {
+                        id = "busbey"
+                        name = "Sean Busbey"
+                        email = "sean.busbey@gmail.com"
+                    }
+                    developer {
+                        id = "cmatser"
+                        name = "Chrisjan Matser"
+                        email = "cmatser@codespinnerinc.com"
+                    }
+                    developer {
+                        id = "stfeng2"
+                        name = "Stanley Feng"
+                        email = "stfeng@google.com"
+                    }
+                }
+                scm {
+                    connection = "scm:git:https://github.com/mminichino/ycsb-core.git"
+                    developerConnection = "scm:git:ssh://git@github.com:mminichino/ycsb-core.git"
+                    url = "https://github.com/mminichino/ycsb-core"
+                }
+            }
+        }
+    }
+
+    repositories {
+        maven {
+            url = layout.buildDirectory.dir("staging-deploy").get().asFile.toURI()
+        }
+    }
+}
+
+jreleaser {
+    signing {
+        active.set(Active.ALWAYS)
+        armored.set(true)
+    }
+    deploy {
+        maven {
+            mavenCentral {
+                create("sonatype") {
+                    active.set(Active.ALWAYS)
+                    url.set("https://central.sonatype.com/api/v1/publisher")
+                    stagingRepository("build/staging-deploy")
+                }
+            }
+        }
+    }
+}
+
+distributions {
+    main {
+        distributionBaseName = project.name
+        contents {
+            into('lib') {
+                from(tasks.jar)
+                from(tasks.sourcesJar)
+                from(tasks.javadocJar)
+                from(configurations.runtimeClasspath)
+            }
+            from('.') {
+                include 'README*', 'LICENSE*'
+            }
+        }
+    }
+}
+
+tasks.named('assemble').configure {
+    dependsOn tasks.named('distZip')
+}
+
+tasks.named('jreleaserDeploy').configure {
+    dependsOn tasks.named('publish')
+}
