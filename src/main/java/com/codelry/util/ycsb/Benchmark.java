@@ -562,7 +562,10 @@ public class Benchmark {
   }
 
   private void loadPropertiesFromFile(Properties properties, String propertyFile) {
-    ClassLoader classloader = Benchmark.class.getClassLoader();
+    ClassLoader classloader = Thread.currentThread().getContextClassLoader();
+    if (classloader == null) {
+      classloader = Benchmark.class.getClassLoader();
+    }
     try (InputStream in = classloader.getResourceAsStream(propertyFile)) {
       if (in != null) {
         logger.debug("Loading properties from resource {}", propertyFile);

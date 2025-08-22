@@ -6,12 +6,10 @@ plugins {
     id 'distribution'
 }
 
-
-import org.jreleaser.gradle.plugin.JReleaserExtension
 import org.jreleaser.model.Active
 
 group = 'com.codelry.util.ycsb'
-version = '0.18.1'
+version = '0.18.2'
 
 repositories {
     mavenCentral()
