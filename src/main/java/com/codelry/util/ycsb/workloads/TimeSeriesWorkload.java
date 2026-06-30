@@ -29,6 +29,8 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 
 import com.codelry.util.ycsb.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import com.codelry.util.ycsb.generator.DiscreteGenerator;
 import com.codelry.util.ycsb.generator.Generator;
 import com.codelry.util.ycsb.generator.HotspotIntegerGenerator;
@@ -273,8 +275,10 @@ import com.codelry.util.ycsb.measurements.Measurements;
  * It's more of a bulk-loading operation now.</li>
  * </ul>
  */
-public class TimeSeriesWorkload extends Workload {  
-  
+public class TimeSeriesWorkload extends Workload {
+
+  private static final Logger logger = LoggerFactory.getLogger(TimeSeriesWorkload.class);
+
   /**
    * The types of values written to the timeseries store.
    */
@@ -627,7 +631,7 @@ public class TimeSeriesWorkload extends Workload {
         p.getProperty(CoreWorkload.DATA_INTEGRITY_PROPERTY, 
             CoreWorkload.DATA_INTEGRITY_PROPERTY_DEFAULT));
     if (dataintegrity) {
-      System.out.println("Data integrity is enabled.");
+      logger.info("Data integrity is enabled.");
     }
     
     queryTimeSpan = Integer.parseInt(p.getProperty(QUERY_TIMESPAN_PROPERTY, 

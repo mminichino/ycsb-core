@@ -18,6 +18,8 @@
 package com.codelry.util.ycsb;
 
 import com.codelry.util.ycsb.measurements.Measurements;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import java.text.DecimalFormat;
 import java.text.SimpleDateFormat;
 import java.util.Date;
@@ -29,6 +31,8 @@ import java.util.concurrent.TimeUnit;
  * A thread to periodically show the status of the experiment to reassure you that progress is being made.
  */
 public class StatusThread extends Thread {
+  private static final Logger logger = LoggerFactory.getLogger(StatusThread.class);
+
   // Counts down each of the clients completing
   private final CountDownLatch completeLatch;
 
@@ -174,13 +178,10 @@ public class StatusThread extends Thread {
       msg.append("est completion in ").append(RemainingFormatter.format(estremaining));
     }
 
-    msg.append(Measurements.getMeasurements().getSummary());
+    long intervalMs = endIntervalMs - startIntervalMs;
+    msg.append(Measurements.getMeasurements().getSummary(intervalMs));
 
-    System.err.println(msg);
-
-    if (standardstatus) {
-      System.out.println(msg);
-    }
+    logger.info("{}", msg);
     return totalops;
   }
 

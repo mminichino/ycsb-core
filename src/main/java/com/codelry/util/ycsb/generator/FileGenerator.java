@@ -21,11 +21,15 @@ import java.io.BufferedReader;
 import java.io.FileReader;
 import java.io.IOException;
 import java.io.Reader;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * A generator, whose sequence is the lines of a file.
  */
 public class FileGenerator extends Generator<String> {
+
+  private static final Logger logger = LoggerFactory.getLogger(FileGenerator.class);
   private final String filename;
   private String current;
   private BufferedReader reader;
@@ -65,7 +69,7 @@ public class FileGenerator extends Generator<String> {
    */
   public synchronized void reloadFile() {
     try (Reader r = reader) {
-      System.err.println("Reload " + filename);
+      logger.debug("Reload {}", filename);
       reader = new BufferedReader(new FileReader(filename));
     } catch (IOException e) {
       throw new RuntimeException(e);

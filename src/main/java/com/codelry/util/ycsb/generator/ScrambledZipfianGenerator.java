@@ -18,6 +18,8 @@
 package com.codelry.util.ycsb.generator;
 
 import com.codelry.util.ycsb.Utils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * A generator of a zipfian distribution. It produces a sequence of items, such that some items are more popular than
@@ -30,6 +32,8 @@ import com.codelry.util.ycsb.Utils;
  * @ZipfianGenerator, if you don't want the head of the distribution (the popular items) clustered together.
  */
 public class ScrambledZipfianGenerator extends NumberGenerator {
+
+  private static final Logger logger = LoggerFactory.getLogger(ScrambledZipfianGenerator.class);
   public static final double ZETAN = 26.46902820178302;
   public static final double USED_ZIPFIAN_CONSTANT = 0.99;
   public static final long ITEM_COUNT = 10000000000L;
@@ -107,13 +111,13 @@ zipfian constant
 
   public static void main(String[] args) {
     double newzetan = ZipfianGenerator.zetastatic(ITEM_COUNT, ZipfianGenerator.ZIPFIAN_CONSTANT);
-    System.out.println("zetan: " + newzetan);
+    logger.debug("zetan: {}", newzetan);
     System.exit(0);
 
     ScrambledZipfianGenerator gen = new ScrambledZipfianGenerator(10000);
 
     for (int i = 0; i < 1000000; i++) {
-      System.out.println("" + gen.nextValue());
+      logger.debug("{}", gen.nextValue());
     }
   }
 

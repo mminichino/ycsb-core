@@ -18,6 +18,8 @@
 package com.codelry.util.ycsb;
 
 import com.codelry.util.ycsb.workloads.CoreWorkload;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.BufferedReader;
 import java.io.FileInputStream;
@@ -29,6 +31,8 @@ import java.util.*;
  * A simple command line client to a database, using the appropriate com.codelry.util.ycsb.DB implementation.
  */
 public final class CommandLine {
+  private static final Logger logger = LoggerFactory.getLogger(CommandLine.class);
+
   private CommandLine() {
     //not used
   }
@@ -36,26 +40,26 @@ public final class CommandLine {
   public static final String DEFAULT_DB = "com.codelry.util.ycsb.BasicDB";
 
   public static void usageMessage() {
-    System.out.println("YCSB Command Line Client");
-    System.out.println("Usage: java com.codelry.util.ycsb.CommandLine [options]");
-    System.out.println("Options:");
-    System.out.println("  -P filename: Specify a property file");
-    System.out.println("  -p name=value: Specify a property value");
-    System.out.println("  -db classname: Use a specified DB class (can also set the \"db\" property)");
-    System.out.println("  -table tablename: Use the table name instead of the default \"" +
-        CoreWorkload.TABLENAME_PROPERTY_DEFAULT + "\"");
-    System.out.println();
+    logger.info("YCSB Command Line Client");
+    logger.info("Usage: java com.codelry.util.ycsb.CommandLine [options]");
+    logger.info("Options:");
+    logger.info("  -P filename: Specify a property file");
+    logger.info("  -p name=value: Specify a property value");
+    logger.info("  -db classname: Use a specified DB class (can also set the \"db\" property)");
+    logger.info("  -table tablename: Use the table name instead of the default \"{}\"",
+        CoreWorkload.TABLENAME_PROPERTY_DEFAULT);
+    logger.info("");
   }
 
   public static void help() {
-    System.out.println("Commands:");
-    System.out.println("  read key [field1 field2 ...] - Read a record");
-    System.out.println("  scan key recordcount [field1 field2 ...] - Scan starting at key");
-    System.out.println("  insert key name1=value1 [name2=value2 ...] - Insert a new record");
-    System.out.println("  update key name1=value1 [name2=value2 ...] - Update a record");
-    System.out.println("  delete key - Delete a record");
-    System.out.println("  table [tablename] - Get or [set] the name of the table");
-    System.out.println("  quit - Quit");
+    logger.info("Commands:");
+    logger.info("  read key [field1 field2 ...] - Read a record");
+    logger.info("  scan key recordcount [field1 field2 ...] - Scan starting at key");
+    logger.info("  insert key name1=value1 [name2=value2 ...] - Insert a new record");
+    logger.info("  update key name1=value1 [name2=value2 ...] - Update a record");
+    logger.info("  delete key - Delete a record");
+    logger.info("  table [tablename] - Get or [set] the name of the table");
+    logger.info("  quit - Quit");
   }
 
   public static void main(String[] args) {
@@ -73,9 +77,9 @@ public final class CommandLine {
 
     props = fileprops;
 
-    System.out.println("YCSB Command Line client");
-    System.out.println("Type \"help\" for command line help");
-    System.out.println("Start with \"-help\" for usage info");
+    logger.info("YCSB Command Line client");
+    logger.info("Type \"help\" for command line help");
+    logger.info("Start with \"-help\" for usage info");
 
     String table = props.getProperty(CoreWorkload.TABLENAME_PROPERTY, CoreWorkload.TABLENAME_PROPERTY_DEFAULT);
 
@@ -102,7 +106,7 @@ public final class CommandLine {
       System.exit(0);
     }
 
-    System.out.println("Connected.");
+    logger.info("Connected.");
 
     //main loop
     BufferedReader br = new BufferedReader(new InputStreamReader(System.in));
@@ -150,10 +154,10 @@ public final class CommandLine {
       } else if (tokens[0].compareTo("delete") == 0) {
         handleDelete(tokens, table, db);
       } else {
-        System.out.println("Error: unknown command \"" + tokens[0] + "\"");
+        logger.warn("Error: unknown command \"{}\"", tokens[0]);
       }
 
-      System.out.println((System.currentTimeMillis() - st) + " ms");
+      logger.info("{} ms", System.currentTimeMillis() - st);
     }
   }
 
@@ -189,7 +193,7 @@ public final class CommandLine {
         try {
           myfileprops.load(new FileInputStream(propfile));
         } catch (IOException e) {
-          System.out.println(e.getMessage());
+          logger.error("{}", e.getMessage(), e);
           System.exit(0);
         }
 
@@ -225,7 +229,7 @@ public final class CommandLine {
 
         argindex++;
       } else {
-        System.out.println("Unknown option " + args[argindex]);
+        logger.error("Unknown option {}", args[argindex]);
         usageMessage();
         System.exit(0);
       }
@@ -243,16 +247,16 @@ public final class CommandLine {
 
   private static void handleDelete(String[] tokens, String table, DB db) {
     if (tokens.length != 2) {
-      System.out.println("Error: syntax is \"delete keyname\"");
+      logger.warn("Error: syntax is \"delete keyname\"");
     } else {
       Status ret = db.delete(table, tokens[1]);
-      System.out.println("Return result: " + ret.getName());
+      logger.info("Return result: {}", ret.getName());
     }
   }
 
   private static void handleInsert(String[] tokens, String table, DB db) {
     if (tokens.length < 3) {
-      System.out.println("Error: syntax is \"insert keyname name1=value1 [name2=value2 ...]\"");
+      logger.warn("Error: syntax is \"insert keyname name1=value1 [name2=value2 ...]\"");
     } else {
       HashMap<String, ByteIterator> values = new HashMap<>();
 
@@ -262,13 +266,13 @@ public final class CommandLine {
       }
 
       Status ret = db.insert(table, tokens[1], values);
-      System.out.println("Result: " + ret.getName());
+      logger.info("Result: {}", ret.getName());
     }
   }
 
   private static void handleUpdate(String[] tokens, String table, DB db) {
     if (tokens.length < 3) {
-      System.out.println("Error: syntax is \"update keyname name1=value1 [name2=value2 ...]\"");
+      logger.warn("Error: syntax is \"update keyname name1=value1 [name2=value2 ...]\"");
     } else {
       HashMap<String, ByteIterator> values = new HashMap<>();
 
@@ -278,13 +282,13 @@ public final class CommandLine {
       }
 
       Status ret = db.update(table, tokens[1], values);
-      System.out.println("Result: " + ret.getName());
+      logger.info("Result: {}", ret.getName());
     }
   }
 
   private static void handleScan(String[] tokens, String table, DB db) {
     if (tokens.length < 3) {
-      System.out.println("Error: syntax is \"scan keyname scanlength [field1 field2 ...]\"");
+      logger.warn("Error: syntax is \"scan keyname scanlength [field1 field2 ...]\"");
     } else {
       Set<String> fields = null;
 
@@ -296,26 +300,26 @@ public final class CommandLine {
 
       Vector<HashMap<String, ByteIterator>> results = new Vector<>();
       Status ret = db.scan(table, tokens[1], Integer.parseInt(tokens[2]), fields, results);
-      System.out.println("Result: " + ret.getName());
+      logger.info("Result: {}", ret.getName());
       int record = 0;
       if (results.isEmpty()) {
-        System.out.println("0 records");
+        logger.info("0 records");
       } else {
-        System.out.println("--------------------------------");
+        logger.info("--------------------------------");
       }
       for (Map<String, ByteIterator> result : results) {
-        System.out.println("Record " + (record++));
+        logger.info("Record {}", record++);
         for (Map.Entry<String, ByteIterator> ent : result.entrySet()) {
-          System.out.println(ent.getKey() + "=" + ent.getValue());
+          logger.info("{}={}", ent.getKey(), ent.getValue());
         }
-        System.out.println("--------------------------------");
+        logger.info("--------------------------------");
       }
     }
   }
 
   private static void handleRead(String[] tokens, String table, DB db) {
     if (tokens.length == 1) {
-      System.out.println("Error: syntax is \"read keyname [field1 field2 ...]\"");
+      logger.warn("Error: syntax is \"read keyname [field1 field2 ...]\"");
     } else {
       Set<String> fields = null;
 
@@ -327,21 +331,21 @@ public final class CommandLine {
 
       HashMap<String, ByteIterator> result = new HashMap<>();
       Status ret = db.read(table, tokens[1], fields, result);
-      System.out.println("Return code: " + ret.getName());
+      logger.info("Return code: {}", ret.getName());
       for (Map.Entry<String, ByteIterator> ent : result.entrySet()) {
-        System.out.println(ent.getKey() + "=" + ent.getValue());
+        logger.info("{}={}", ent.getKey(), ent.getValue());
       }
     }
   }
 
   private static void handleTable(String[] tokens, String table) {
     if (tokens.length == 1) {
-      System.out.println("Using table \"" + table + "\"");
+      logger.info("Using table \"{}\"", table);
     } else if (tokens.length == 2) {
       table = tokens[1];
-      System.out.println("Using table \"" + table + "\"");
+      logger.info("Using table \"{}\"", table);
     } else {
-      System.out.println("Error: syntax is \"table tablename\"");
+      logger.warn("Error: syntax is \"table tablename\"");
     }
   }
 

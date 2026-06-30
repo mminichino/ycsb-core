@@ -19,6 +19,8 @@ package com.codelry.util.ycsb;
 import com.codelry.util.ycsb.generator.Generator;
 import com.codelry.util.ycsb.generator.IncrementingPrintableStringGenerator;
 import com.codelry.util.ycsb.workloads.TimeSeriesWorkload;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.*;
 import java.util.concurrent.TimeUnit;
@@ -37,6 +39,8 @@ import java.util.concurrent.TimeUnit;
  * to correctly initialize the workload-parsing.
  */
 public abstract class TimeseriesDB extends DB {
+
+  private static final Logger logger = LoggerFactory.getLogger(TimeseriesDB.class);
 
   // defaults for downsampling. Basically we ignore it
   private static final String DOWNSAMPLING_FUNCTION_PROPERTY_DEFAULT = "NONE";
@@ -183,7 +187,7 @@ public abstract class TimeseriesDB extends DB {
         String[] queryParts = field.split(tagPairDelimiter);
         if (queryParts.length == 1) {
           // we should probably warn about this being ignored...
-          System.err.println("Grouping by arbitrary series is currently not supported");
+          logger.warn("Grouping by arbitrary series is currently not supported");
           groupByFields.add(field);
         } else {
           tagQueries.computeIfAbsent(queryParts[0], k -> new ArrayList<>()).add(queryParts[1]);

@@ -18,6 +18,8 @@
 package com.codelry.util.ycsb.measurements;
 
 import com.codelry.util.ycsb.measurements.exporter.MeasurementsExporter;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
@@ -34,6 +36,8 @@ import java.util.Properties;
  *
  */
 public class OneMeasurementRaw extends OneMeasurement {
+  private static final Logger logger = LoggerFactory.getLogger(OneMeasurementRaw.class);
+
   /**
    * One raw data point, two fields: timestamp (ms) when the datapoint is
    * inserted, and the value.
@@ -106,8 +110,7 @@ public class OneMeasurementRaw extends OneMeasurement {
 
     String outputFilePath = props.getProperty(OUTPUT_FILE_PATH, OUTPUT_FILE_PATH_DEFAULT);
     if (!outputFilePath.isEmpty()) {
-      System.out.println("Raw data measurement: will output to result file: " +
-          outputFilePath);
+      logger.info("Raw data measurement: will output to result file: {}", outputFilePath);
 
       try {
         outputStream = new PrintStream(
@@ -118,7 +121,7 @@ public class OneMeasurementRaw extends OneMeasurement {
       }
 
     } else {
-      System.out.println("Raw data measurement: will output to stdout.");
+      logger.info("Raw data measurement: will output to stdout.");
       outputStream = System.out;
 
     }
@@ -190,18 +193,10 @@ public class OneMeasurementRaw extends OneMeasurement {
   }
 
   @Override
-  public synchronized String getSummary() {
-    if (windowOperations == 0) {
-      return "";
-    }
-
-    String toReturn = String.format("%s count: %d, average latency(us): %.2f",
-        getName(), windowOperations,
-        (double) windowTotalLatency / (double) windowOperations);
-
+  protected synchronized long consumeIntervalOperationCount() {
+    long count = windowOperations;
     windowTotalLatency = 0;
     windowOperations = 0;
-
-    return toReturn;
+    return count;
   }
 }

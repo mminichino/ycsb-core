@@ -64,6 +64,9 @@ public class Benchmark {
   public static final String TEST_CLEANUP_PROPERTY = "test.clean";
   public static String testCleanup;
 
+  public static final String MANUAL_MODE = "false";
+  public static boolean manualMode;
+
   private static StatusThread statusthread = null;
 
   private static final String YCSB_PROPERTY_FILE = "ycsb.properties";
@@ -182,6 +185,7 @@ public class Benchmark {
     testSetup = props.getProperty(TEST_SETUP_PROPERTY, null);
     testCleanup = props.getProperty(TEST_CLEANUP_PROPERTY, null);
     boolean loadMode = props.getProperty(DO_TRANSACTIONS_PROPERTY, "true").equals("false");
+    manualMode = props.getProperty(MANUAL_MODE, "false").equals("true");
 
     //compute the target throughput
     double targetperthreadperms = -1;
@@ -190,7 +194,7 @@ public class Benchmark {
       targetperthreadperms = targetperthread / 1000.0;
     }
 
-    if (testSetup != null && loadMode) {
+    if (testSetup != null && loadMode && !manualMode) {
       try {
         runTestSetup(testSetup, props);
       } catch (Exception e) {
@@ -297,7 +301,7 @@ public class Benchmark {
       System.exit(1);
     }
 
-    if (testCleanup != null && !loadMode) {
+    if (testCleanup != null && !loadMode && !manualMode) {
       try {
         runTestClean(testCleanup, props);
       } catch (Exception e) {
@@ -409,7 +413,7 @@ public class Benchmark {
     try {
       Properties projectProp = new Properties();
       projectProp.load(classLoader.getResourceAsStream("project.properties"));
-      logger.info("YCSB Client {}", projectProp.getProperty("version"));
+      logger.info("YCSB Benchmark {}", projectProp.getProperty("version"));
     } catch (IOException e) {
       logger.error("Unable to retrieve client version.");
     }
@@ -478,6 +482,7 @@ public class Benchmark {
     String db = cmd.getOptionValue("db", "com.codelry.util.ycsb.BasicDB");
     Boolean status = cmd.hasOption("status");
     String label = cmd.getOptionValue("label", "");
+    Boolean manualMode = cmd.hasOption("manual");
 
     properties.setProperty(THREAD_COUNT_PROPERTY, threads);
     properties.setProperty(TARGET_PROPERTY, target);
@@ -485,6 +490,7 @@ public class Benchmark {
     properties.setProperty(DB_PROPERTY, db);
     properties.setProperty(STATUS_PROPERTY, String.valueOf(status));
     properties.setProperty(LABEL_PROPERTY, label);
+    properties.setProperty(MANUAL_MODE, String.valueOf(manualMode));
 
     loadPropertiesFiles(workload, properties);
     return properties;
@@ -541,6 +547,7 @@ public class Benchmark {
     Option props = new Option("p", "property", true, "property name=value");
     Option status = new Option("s", "status", false, "show status");
     Option label = new Option("L", "label", true, "label for status");
+    Option manual = new Option("m", "manual", false, "manual mode");
     workload.setRequired(false);
     threads.setRequired(false);
     target.setRequired(false);
@@ -550,6 +557,7 @@ public class Benchmark {
     props.setRequired(false);
     status.setRequired(false);
     label.setRequired(false);
+    manual.setRequired(false);
     options.addOption(workload);
     options.addOption(threads);
     options.addOption(target);
@@ -559,6 +567,7 @@ public class Benchmark {
     options.addOption(props);
     options.addOption(status);
     options.addOption(label);
+    options.addOption(manual);
   }
 
   private void loadPropertiesFromFile(Properties properties, String propertyFile) {

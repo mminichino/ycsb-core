@@ -18,6 +18,8 @@
 package com.codelry.util.ycsb.generator;
 
 import java.util.concurrent.ThreadLocalRandom;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * A generator of a zipfian distribution. It produces a sequence of items, such that some items are more popular than
@@ -40,6 +42,8 @@ import java.util.concurrent.ThreadLocalRandom;
  * The algorithm used here is from "Quickly Generating Billion-Record Synthetic Databases", Jim Gray et al, SIGMOD 1994.
  */
 public class ZipfianGenerator extends NumberGenerator {
+
+  private static final Logger logger = LoggerFactory.getLogger(ZipfianGenerator.class);
   public static final double ZIPFIAN_CONSTANT = 0.99;
 
   /**
@@ -238,8 +242,8 @@ public class ZipfianGenerator extends NumberGenerator {
           // then just subtract the zeta sequence terms for the items that went away. This would be faster than
           // recomputing from scratch when the number of items decreases
 
-          System.err.println("WARNING: Recomputing Zipfian distribtion. This is slow and should be avoided. " +
-              "(itemcount=" + itemcount + " countforzeta=" + countforzeta + ")");
+          logger.warn("Recomputing Zipfian distribtion. This is slow and should be avoided. (itemcount={} countforzeta={})",
+              itemcount, countforzeta);
 
           zetan = zeta(itemcount, theta);
           eta = (1 - Math.pow(2.0 / items, 1 - theta)) / (1 - zeta2theta / zetan);

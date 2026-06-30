@@ -20,7 +20,6 @@ package com.codelry.util.ycsb.measurements;
 import com.codelry.util.ycsb.measurements.exporter.MeasurementsExporter;
 
 import java.io.IOException;
-import java.text.DecimalFormat;
 import java.util.Properties;
 
 /**
@@ -153,14 +152,10 @@ public class OneMeasurementHistogram extends OneMeasurement {
   }
 
   @Override
-  public String getSummary() {
-    if (windowoperations == 0) {
-      return "";
-    }
-    DecimalFormat d = new DecimalFormat("#.##");
-    double report = ((double) windowtotallatency) / ((double) windowoperations);
+  protected synchronized long consumeIntervalOperationCount() {
+    long count = windowoperations;
     windowtotallatency = 0;
     windowoperations = 0;
-    return "[" + getName() + " AverageLatency(us)=" + d.format(report) + "]";
+    return count;
   }
 }

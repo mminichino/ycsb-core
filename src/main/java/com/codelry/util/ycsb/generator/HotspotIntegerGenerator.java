@@ -18,6 +18,8 @@ package com.codelry.util.ycsb.generator;
 
 import java.util.Random;
 import java.util.concurrent.ThreadLocalRandom;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Generate integers resembling a hotspot distribution where x% of operations
@@ -29,6 +31,8 @@ import java.util.concurrent.ThreadLocalRandom;
  *
  */
 public class HotspotIntegerGenerator extends NumberGenerator {
+
+  private static final Logger logger = LoggerFactory.getLogger(HotspotIntegerGenerator.class);
 
   private final long lowerBound;
   private final long upperBound;
@@ -48,16 +52,15 @@ public class HotspotIntegerGenerator extends NumberGenerator {
   public HotspotIntegerGenerator(long lowerBound, long upperBound,
                                  double hotsetFraction, double hotOpnFraction) {
     if (hotsetFraction < 0.0 || hotsetFraction > 1.0) {
-      System.err.println("Hotset fraction out of range. Setting to 0.0");
+      logger.warn("Hotset fraction out of range. Setting to 0.0");
       hotsetFraction = 0.0;
     }
     if (hotOpnFraction < 0.0 || hotOpnFraction > 1.0) {
-      System.err.println("Hot operation fraction out of range. Setting to 0.0");
+      logger.warn("Hot operation fraction out of range. Setting to 0.0");
       hotOpnFraction = 0.0;
     }
     if (lowerBound > upperBound) {
-      System.err.println("Upper bound of Hotspot generator smaller than the lower bound. " +
-          "Swapping the values.");
+      logger.warn("Upper bound of Hotspot generator smaller than the lower bound. Swapping the values.");
       long temp = lowerBound;
       lowerBound = upperBound;
       upperBound = temp;

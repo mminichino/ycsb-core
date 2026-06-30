@@ -24,12 +24,16 @@ import java.util.Set;
 import java.util.TreeMap;
 
 import com.codelry.util.ycsb.workloads.TimeSeriesWorkload;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Basic DB for printing out time series workloads and/or tracking the distribution
  * of keys and fields.
  */
 public class BasicTSDB extends BasicDB {
+
+  private static final Logger logger = LoggerFactory.getLogger(BasicTSDB.class);
 
   /** Time series workload specific counters. */
   protected static Map<Long, Integer> timestamps;
@@ -83,7 +87,7 @@ public class BasicTSDB extends BasicDB {
       }
 
       sb.append("]");
-      System.out.println(sb);
+      logger.debug("{}", sb);
     }
 
     if (count) {
@@ -143,7 +147,7 @@ public class BasicTSDB extends BasicDB {
         }
       }
       sb.append("]");
-      System.out.println(sb);
+      logger.debug("{}", sb);
     }
 
     if (count) {
@@ -196,7 +200,7 @@ public class BasicTSDB extends BasicDB {
         }
       }
       sb.append("]");
-      System.out.println(sb);
+      logger.debug("{}", sb);
     }
 
     if (count) {
@@ -227,9 +231,9 @@ public class BasicTSDB extends BasicDB {
   public void cleanup() {
     super.cleanup();
     if (count && counter < 1) {
-      System.out.println("[TIMESTAMPS], Unique, " + timestamps.size());
-      System.out.println("[FLOATS], Unique series, " + floats.size());
-      System.out.println("[INTEGERS], Unique series, " + integers.size());
+      logger.info("[TIMESTAMPS], Unique, {}", timestamps.size());
+      logger.info("[FLOATS], Unique series, {}", floats.size());
+      logger.info("[INTEGERS], Unique series, {}", integers.size());
       
       long minTs = Long.MAX_VALUE;
       long maxTs = Long.MIN_VALUE;
@@ -241,8 +245,8 @@ public class BasicTSDB extends BasicDB {
           minTs = ts;
         }
       }
-      System.out.println("[TIMESTAMPS], Min, " + minTs);
-      System.out.println("[TIMESTAMPS], Max, " + maxTs);
+      logger.info("[TIMESTAMPS], Min, {}", minTs);
+      logger.info("[TIMESTAMPS], Max, {}", maxTs);
     }
   }
   
