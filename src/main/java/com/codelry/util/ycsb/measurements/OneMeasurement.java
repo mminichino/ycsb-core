@@ -21,6 +21,7 @@ import com.codelry.util.ycsb.Status;
 import com.codelry.util.ycsb.measurements.exporter.MeasurementsExporter;
 
 import java.io.IOException;
+import java.text.DecimalFormat;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -47,7 +48,35 @@ public abstract class OneMeasurement {
 
   public abstract void measure(int latency);
 
-  public abstract String getSummary();
+  /**
+   * Returns the number of operations in the current reporting interval and advances interval state.
+   */
+  protected long consumeIntervalOperationCount() {
+    return 0;
+  }
+
+  /**
+   * Return a one line summary of the measurements for the given interval.
+   *
+   * @param intervalMs length of the reporting interval in milliseconds
+   */
+  public String getSummary(long intervalMs) {
+    return formatStatusSummary(consumeIntervalOperationCount(), intervalMs);
+  }
+
+  protected final String formatStatusSummary(long count, long intervalMs) {
+    if (count == 0) {
+      return "";
+    }
+    DecimalFormat d = new DecimalFormat("#.##");
+    StringBuilder sb = new StringBuilder();
+    sb.append("[").append(getName()).append(": Count=").append(count);
+    if (intervalMs > 0) {
+      sb.append(", ").append(d.format(1000.0 * count / intervalMs)).append(" ops/sec");
+    }
+    sb.append("]");
+    return sb.toString();
+  }
 
   /**
    * No need for synchronization, using CHM to deal with that.

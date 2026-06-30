@@ -19,6 +19,8 @@ package com.codelry.util.ycsb.measurements;
 
 import com.codelry.util.ycsb.Status;
 import com.codelry.util.ycsb.measurements.exporter.MeasurementsExporter;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.Properties;
@@ -28,6 +30,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * Collects latency measurements, and reports them when requested.
  */
 public class Measurements {
+
+  private static final Logger logger = LoggerFactory.getLogger(Measurements.class);
   /**
    * All supported measurement types are defined in this enum.
    */
@@ -189,9 +193,7 @@ public class Measurements {
       m.measure(latency);
     } catch (java.lang.ArrayIndexOutOfBoundsException e) {
       // This seems like a terribly hacky way to cover up for a bug in the measurement code
-      System.out.println("ERROR: java.lang.ArrayIndexOutOfBoundsException - ignoring and continuing");
-      e.printStackTrace();
-      e.printStackTrace(System.out);
+      logger.error("ArrayIndexOutOfBoundsException - ignoring and continuing", e);
     }
   }
 
@@ -208,9 +210,7 @@ public class Measurements {
       m.measure(latency);
     } catch (java.lang.ArrayIndexOutOfBoundsException e) {
       // This seems like a terribly hacky way to cover up for a bug in the measurement code
-      System.out.println("ERROR: java.lang.ArrayIndexOutOfBoundsException - ignoring and continuing");
-      e.printStackTrace();
-      e.printStackTrace(System.out);
+      logger.error("ArrayIndexOutOfBoundsException - ignoring and continuing", e);
     }
   }
 
@@ -265,17 +265,28 @@ public class Measurements {
   }
 
   /**
-   * Return a one line summary of the measurements.
+   * Return a one line summary of the measurements for the given interval.
+   *
+   * @param intervalMs length of the reporting interval in milliseconds
    */
-  public synchronized String getSummary() {
-    String ret = "";
+  public synchronized String getSummary(long intervalMs) {
+    StringBuilder ret = new StringBuilder();
     for (OneMeasurement m : opToMesurementMap.values()) {
-      ret += m.getSummary() + " ";
+      appendSummary(ret, m.getSummary(intervalMs));
     }
     for (OneMeasurement m : opToIntendedMesurementMap.values()) {
-      ret += m.getSummary() + " ";
+      appendSummary(ret, m.getSummary(intervalMs));
     }
-    return ret;
+    return ret.toString();
+  }
+
+  private static void appendSummary(StringBuilder ret, String summary) {
+    if (!summary.isEmpty()) {
+      if (ret.length() > 0) {
+        ret.append(' ');
+      }
+      ret.append(summary);
+    }
   }
 
 }

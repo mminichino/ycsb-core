@@ -17,10 +17,15 @@
 
 package com.codelry.util.ycsb.generator;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * Generate a popularity distribution of items, skewed to favor recent items significantly more than older items.
  */
 public class SkewedLatestGenerator extends NumberGenerator {
+  private static final Logger logger = LoggerFactory.getLogger(SkewedLatestGenerator.class);
+
   private CounterGenerator basis;
   private final ZipfianGenerator zipfian;
 
@@ -45,7 +50,7 @@ public class SkewedLatestGenerator extends NumberGenerator {
   public static void main(String[] args) {
     SkewedLatestGenerator gen = new SkewedLatestGenerator(new CounterGenerator(1000));
     for (int i = 0; i < Integer.parseInt(args[0]); i++) {
-      System.out.println(gen.nextString());
+      logger.debug("{}", gen.nextString());
     }
   }
 

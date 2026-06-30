@@ -65,12 +65,12 @@ public class TwoInOneMeasurement extends OneMeasurement {
   /**
    * This is called periodically from the StatusThread. There's a single StatusThread per Client process.
    * We optionally serialize the interval to log on this opportunity.
-   *
-   * @see com.codelry.util.ycsb.measurements.OneMeasurement#getSummary()
    */
   @Override
-  public String getSummary() {
-    return thing1.getSummary() + "\n" + thing2.getSummary();
+  protected long consumeIntervalOperationCount() {
+    long count = thing1.consumeIntervalOperationCount();
+    thing2.consumeIntervalOperationCount();
+    return count;
   }
 
 }

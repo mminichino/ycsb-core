@@ -22,12 +22,13 @@ import org.HdrHistogram.Histogram;
 import org.HdrHistogram.HistogramIterationValue;
 import org.HdrHistogram.HistogramLogWriter;
 import org.HdrHistogram.Recorder;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.PrintStream;
-import java.text.DecimalFormat;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Properties;
@@ -37,6 +38,8 @@ import java.util.Properties;
  *
  */
 public class OneMeasurementHdrHistogram extends OneMeasurement {
+
+  private static final Logger logger = LoggerFactory.getLogger(OneMeasurementHdrHistogram.class);
 
   // we need one log per measurement histogram
   private final PrintStream log;
@@ -144,26 +147,15 @@ public class OneMeasurementHdrHistogram extends OneMeasurement {
    * This is called periodically from the StatusThread. There's a single
    * StatusThread per Client process. We optionally serialize the interval to
    * log on this opportunity.
-   *
-   * @see com.codelry.util.ycsb.measurements.OneMeasurement#getSummary()
    */
   @Override
-  public String getSummary() {
+  protected long consumeIntervalOperationCount() {
     Histogram intervalHistogram = getIntervalHistogramAndAccumulate();
     // we use the summary interval as the histogram file interval.
     if (histogramLogWriter != null) {
       histogramLogWriter.outputIntervalHistogram(intervalHistogram);
     }
-
-    DecimalFormat d = new DecimalFormat("#.##");
-    return "[" + getName() + ": Count=" + intervalHistogram.getTotalCount() + ", Max="
-        + intervalHistogram.getMaxValue() + ", Min=" + intervalHistogram.getMinValue() + ", Avg="
-        + d.format(intervalHistogram.getMean())
-        + ", 50=" + d.format(intervalHistogram.getValueAtPercentile(50))
-        + ", 90=" + d.format(intervalHistogram.getValueAtPercentile(90))
-        + ", 99=" + d.format(intervalHistogram.getValueAtPercentile(99)) + ", 99.9="
-        + d.format(intervalHistogram.getValueAtPercentile(99.9)) + ", 99.99="
-        + d.format(intervalHistogram.getValueAtPercentile(99.99)) + "]";
+    return intervalHistogram.getTotalCount();
   }
 
   private Histogram getIntervalHistogramAndAccumulate() {
@@ -193,9 +185,8 @@ public class OneMeasurementHdrHistogram extends OneMeasurement {
     } catch (Exception e) {
       // If the given hdrhistogram.percentiles value is unreadable for whatever reason,
       // then calculate and return the default set.
-      System.err.println("[WARN] Couldn't read " + PERCENTILES_PROPERTY + " value: '" + percentileString +
-          "', the default of '" + PERCENTILES_PROPERTY_DEFAULT + "' will be used.");
-      e.printStackTrace();
+      logger.warn("Couldn't read {} value: '{}', the default of '{}' will be used.",
+          PERCENTILES_PROPERTY, percentileString, PERCENTILES_PROPERTY_DEFAULT, e);
       return getPercentileValues(PERCENTILES_PROPERTY_DEFAULT);
     }
 
