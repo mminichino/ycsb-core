@@ -70,6 +70,7 @@ public class Benchmark {
   private static StatusThread statusthread = null;
 
   private static final String YCSB_PROPERTY_FILE = "ycsb.properties";
+  private static final String DB_PROPERTY_FILE = "db.properties";
 
   private static final String HTRACE_KEY_PREFIX = "htrace.";
   private static final String CLIENT_WORKLOAD_INIT_SPAN = "Client#workload_init";
@@ -527,6 +528,7 @@ public class Benchmark {
     loadPropertiesFromFile(properties, workloadFile);
 
     loadPropertiesFromFile(properties, YCSB_PROPERTY_FILE);
+    loadPropertiesFromFile(properties, DB_PROPERTY_FILE);
 
     if (properties.getProperty(WORKLOAD_PROPERTY) == null) {
       properties.setProperty(WORKLOAD_PROPERTY, "com.codelry.util.ycsb.workloads.CoreWorkload");
@@ -577,10 +579,10 @@ public class Benchmark {
     }
     try (InputStream in = classloader.getResourceAsStream(propertyFile)) {
       if (in != null) {
-        logger.debug("Loading properties from resource {}", propertyFile);
+        logger.info("Loading {}", propertyFile);
         properties.load(in);
       } else {
-        logger.warn("Properties resource {} not found on classpath.", propertyFile);
+        logger.warn("File {} not found on classpath", propertyFile);
       }
     } catch (IOException e) {
       logger.error("Can not open properties file {}: {}", propertyFile, e.getMessage());
