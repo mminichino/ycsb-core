@@ -46,6 +46,9 @@ import java.util.*;
  * <LI><b>scanproportion</b>: what proportion of operations should be scans (default: 0)
  * <LI><b>readmodifywriteproportion</b>: what proportion of operations should be read a record,
  * modify it, write it back (default: 0)
+ * <LI><b>readandinsert</b>: derived flag set to true when insertproportion &gt; 0 and either
+ * readproportion &gt; 0 or scanproportion &gt; 0; otherwise false. May be set explicitly to
+ * override the derived value. Optional for DB bindings (default when unset: false)
  * <LI><b>requestdistribution</b>: what distribution should be used to select the records to operate
  * on - uniform, zipfian, hotspot, sequential, exponential or latest (default: uniform)
  * <LI><b>minscanlength</b>: for scans, what is the minimum number of records to scan (default: 1)
@@ -253,6 +256,18 @@ public class CoreWorkload extends Workload {
    * The default proportion of transactions that are scans.
    */
   public static final String READMODIFYWRITE_PROPORTION_PROPERTY_DEFAULT = "0.0";
+
+  /**
+   * The name of the property indicating whether the workload mixes reads/scans with inserts.
+   * Derived as true when insertproportion &gt; 0 and either readproportion &gt; 0 or
+   * scanproportion &gt; 0. May be set explicitly to override the derived value.
+   */
+  public static final String READ_AND_INSERT_PROPERTY = "readandinsert";
+
+  /**
+   * The default value for {@link #READ_AND_INSERT_PROPERTY} when unset and not derived.
+   */
+  public static final String READ_AND_INSERT_PROPERTY_DEFAULT = "false";
 
   /**
    * The name of the property for the the distribution of requests across the keyspace. Options are
@@ -549,6 +564,29 @@ public class CoreWorkload extends Workload {
         INSERTION_RETRY_LIMIT, INSERTION_RETRY_LIMIT_DEFAULT));
     insertionRetryInterval = Integer.parseInt(p.getProperty(
         INSERTION_RETRY_INTERVAL, INSERTION_RETRY_INTERVAL_DEFAULT));
+
+    applyReadAndInsertProperty(p);
+  }
+
+  /**
+   * Sets {@link #READ_AND_INSERT_PROPERTY} from the operation proportions unless it was already
+   * provided. True when insertproportion &gt; 0 and either readproportion &gt; 0 or
+   * scanproportion &gt; 0.
+   *
+   * @param p The properties list to update.
+   */
+  protected static void applyReadAndInsertProperty(final Properties p) {
+    if (p.getProperty(READ_AND_INSERT_PROPERTY) != null) {
+      return;
+    }
+    final double readproportion = Double.parseDouble(
+        p.getProperty(READ_PROPORTION_PROPERTY, READ_PROPORTION_PROPERTY_DEFAULT));
+    final double scanproportion = Double.parseDouble(
+        p.getProperty(SCAN_PROPORTION_PROPERTY, SCAN_PROPORTION_PROPERTY_DEFAULT));
+    final double insertproportion = Double.parseDouble(
+        p.getProperty(INSERT_PROPORTION_PROPERTY, INSERT_PROPORTION_PROPERTY_DEFAULT));
+    final boolean readAndInsert = insertproportion > 0 && (readproportion > 0 || scanproportion > 0);
+    p.setProperty(READ_AND_INSERT_PROPERTY, Boolean.toString(readAndInsert));
   }
 
   /**
