@@ -16,79 +16,170 @@ permissions and limitations under the License. See accompanying
 LICENSE file.
 -->
 
-YCSB
-====================================
+# ycsb-core
 
+YCSB-compatible core library for publishing **standalone** database benchmark projects
+without merging client bindings into the main
+[YCSB](https://github.com/brianfrankcooper/YCSB) repository.
 
+Import this library as a dependency, implement your client binding in your own project,
+and run the standard YCSB workloads. Results remain compatible and comparable with
+other YCSB tests.
 
-Links
------
-* [Project docs](https://github.com/brianfrankcooper/YCSB/wiki)
-* [The original announcement from Yahoo!](https://labs.yahoo.com/news/yahoo-cloud-serving-benchmark/)
+- Maven coordinates: `com.codelry.util.ycsb:ycsb-core`
+- Repository: https://github.com/mminichino/ycsb-core
+- Based on the [Yahoo! Cloud Serving Benchmark](https://labs.yahoo.com/news/yahoo-cloud-serving-benchmark/)
 
+## Using as a dependency
 
+### Gradle
 
-Building from source
---------------------
+```groovy
+dependencies {
+    implementation 'com.codelry.util.ycsb:ycsb-core:0.18.5'
+}
+```
 
-To build YCSB core:
+### Maven
+
+```xml
+<dependency>
+  <groupId>com.codelry.util.ycsb</groupId>
+  <artifactId>ycsb-core</artifactId>
+  <version>0.18.5</version>
+</dependency>
+```
+
+## Implementing a client binding
+
+Create a class that extends `com.codelry.util.ycsb.DB` and implement `read`, `scan`,
+`update`, `insert`, and `delete`. Configure the binding with the `db` property
+(for example in `db.properties` or `ycsb.properties` on the classpath):
+
+```properties
+db=com.example.MyDB
+```
+
+Optional properties such as `readandinsert` are available on the shared `Properties`
+object passed to the binding via `setProperties` / `getProperties()`.
+
+## Entrypoint
+
+The application entrypoint is `com.codelry.util.ycsb.RunBenchmark`, which drives
+`com.codelry.util.ycsb.Benchmark`.
+
+Each workload run performs this cycle automatically:
+
+1. **Setup** (if `test.setup` is defined)
+2. **Load** (bulk insert)
+3. **Run** (transaction phase)
+4. **Cleanup** (if `test.clean` is defined)
+
+Without `-w`, all standard workloads (`a`–`f`) are executed in sequence. With `-w`,
+only the selected workload runs:
+
+```text
+# all workloads
+bin/<your-app>
+
+# single workload (for example Workload E)
+bin/<your-app> -w e
+```
+
+## Example consumer project (Gradle)
+
+```groovy
+plugins {
+    id 'java'
+    id 'application'
+}
+
+dependencies {
+    implementation 'com.codelry.util.ycsb:ycsb-core:0.18.5'
+}
+
+application {
+    mainClass = 'com.codelry.util.ycsb.RunBenchmark'
+    applicationDistribution.from("src/main/conf/") {
+        into "conf"
+    }
+}
+```
+
+Put runtime configuration under `src/main/conf/` (or otherwise on the classpath),
+typically including:
+
+| File | Purpose |
+|------|---------|
+| `ycsb.properties` | Common run settings (`recordcount`, `operationcount`, `threadcount`, `db`, …) |
+| `db.properties` | Database-specific settings for your binding |
+
+Workload definitions (`workloada` … `workloadf`) ship with this library.
+
+Build and run:
+
+```sh
+./gradlew installDist
+build/install/<your-app>/bin/<your-app>
+build/install/<your-app>/bin/<your-app> -w a
+```
+
+## Test setup and cleanup
+
+Between workload runs you can hook prep and teardown classes:
+
+| Property | Interface | When it runs |
+|----------|-----------|--------------|
+| `test.setup` | `com.codelry.util.ycsb.TestSetup` | Before the **load** phase |
+| `test.clean` | `com.codelry.util.ycsb.TestCleanup` | After the **run** phase |
+
+Example:
+
+```properties
+test.setup=com.example.MyTestSetup
+test.clean=com.example.MyTestCleanup
+```
+
+```java
+public class MyTestSetup extends TestSetup {
+  @Override
+  public void testSetup(Properties properties) {
+    // create buckets, truncate tables, etc.
+  }
+}
+
+public class MyTestCleanup extends TestCleanup {
+  @Override
+  public void testClean(Properties properties) {
+    // drop temporary resources, flush state, etc.
+  }
+}
+```
+
+## Building this repository
 
 ```sh
 ./gradlew build
 ```
 
+Java 11 toolchain; bytecode targets Java 8 (`options.release = 8`).
 
+## Latency percentiles
 
-Running multiple instances and latency percentiles
---------------------------------------------------
+Prefer reporting high percentiles (P99 and the tail: P99.9, P99.99, …) rather than
+averages. Latency percentiles must not be averaged across loaders.
 
-In general, you shall be interested in 99% percentile (P99) of the latency
-distribution, and the rest of the tail - 99.9%, 99.99%, 99.999%. The difference
-between the amount of requests that will be observed by a user that fall
-into 95% (P95) percentile and 99% percentile may be sufficiently large.
+When running multiple loaders, dump HDR histograms and merge them offline:
 
-For example, see "How Many Nines?" at https://bravenewgeek.com/everything-you-know-about-latency-is-wrong/.
-The formula to calculate probability of how many clients will observe
-a specific percentile is:
+```text
+-p hdrhistogram.fileoutput=true
+-p hdrhistogram.output.path=file.hdr
+```
 
-    Probability_to_observe = 1 - Percentile ^ Requests
+See [HdrLogProcessing](https://github.com/nitsanw/HdrLogProcessing) and
+[HdrHistogram](https://github.com/HdrHistogram/HdrHistogram) for merge/export tooling.
 
-That is why almost 30% of the users will observe latency worse than P99
-just by loading the default _google.com_ web page:
+## Links
 
-    1 - 0.99 ^ 30 = 0.27
-
-Remember, that
-
-- _latencies_ percentiles can't be averaged. Don't fall into this
-  [trap](http://latencytipoftheday.blogspot.com/2014/06/latencytipoftheday-you-cant-average.html).
-  Neither latency averages, nor P99 averages do not make any sense.
-
-If you run multiple loaders dump result histograms with:
-
-    -p hdrhistogram.fileoutput=true
-    -p hdrhistogram.output.path=file.hdr
-
-merge them manually and extract required percentiles out of the
-joined result.
-
-Remember that running multiple workloads may distort original
-workloads distributions they were intended to produce.
-
-Merging HDR histogram percentiles
----------------------------------
-
-HdrHistogram can serialize its data to HDR files. Use CLI tool
-to do different operations with your saved histograms
-https://github.com/nitsanw/HdrLogProcessing.
-
-You shall be interested in 3 functions:
-
-- Union - to combine result histograms
-- Summarize - to extract latency percentiles
-- An ability to print the result into the CSV file and extract tags
-
-To extract HDR content into CSV file format use from
-https://github.com/HdrHistogram/HdrHistogram/:
-
-    java -cp HdrHistogram-2.1.9.jar org.HdrHistogram.HistogramLogProcessor -i file.hdr -o output_${tag}.csv -csv -tag ${tag}
+* [Original YCSB project docs](https://github.com/brianfrankcooper/YCSB/wiki)
+* [Original Yahoo! announcement](https://labs.yahoo.com/news/yahoo-cloud-serving-benchmark/)

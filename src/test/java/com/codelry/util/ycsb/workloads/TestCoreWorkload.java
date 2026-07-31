@@ -16,6 +16,7 @@
  */
 package com.codelry.util.ycsb.workloads;
 
+import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertTrue;
 
 import java.util.Properties;
@@ -66,5 +67,46 @@ public class TestCoreWorkload {
   @Test (expectedExceptions = IllegalArgumentException.class)
   public void createOperationChooserNullProperties() {
     CoreWorkload.createOperationGenerator(null);
+  }
+
+  @Test
+  public void readAndInsertDerivedFromReadAndInsertProportions() {
+    final Properties p = new Properties();
+    p.setProperty(CoreWorkload.READ_PROPORTION_PROPERTY, "0.95");
+    p.setProperty(CoreWorkload.INSERT_PROPORTION_PROPERTY, "0.05");
+    p.setProperty(CoreWorkload.SCAN_PROPORTION_PROPERTY, "0");
+    CoreWorkload.applyReadAndInsertProperty(p);
+    assertEquals(p.getProperty(CoreWorkload.READ_AND_INSERT_PROPERTY), "true");
+  }
+
+  @Test
+  public void readAndInsertDerivedFromScanAndInsertProportions() {
+    final Properties p = new Properties();
+    p.setProperty(CoreWorkload.READ_PROPORTION_PROPERTY, "0");
+    p.setProperty(CoreWorkload.INSERT_PROPORTION_PROPERTY, "0.05");
+    p.setProperty(CoreWorkload.SCAN_PROPORTION_PROPERTY, "0.95");
+    CoreWorkload.applyReadAndInsertProperty(p);
+    assertEquals(p.getProperty(CoreWorkload.READ_AND_INSERT_PROPERTY), "true");
+  }
+
+  @Test
+  public void readAndInsertFalseWhenNoInsertProportion() {
+    final Properties p = new Properties();
+    p.setProperty(CoreWorkload.READ_PROPORTION_PROPERTY, "0.5");
+    p.setProperty(CoreWorkload.UPDATE_PROPORTION_PROPERTY, "0.5");
+    p.setProperty(CoreWorkload.INSERT_PROPORTION_PROPERTY, "0");
+    p.setProperty(CoreWorkload.SCAN_PROPORTION_PROPERTY, "0");
+    CoreWorkload.applyReadAndInsertProperty(p);
+    assertEquals(p.getProperty(CoreWorkload.READ_AND_INSERT_PROPERTY), "false");
+  }
+
+  @Test
+  public void readAndInsertExplicitOverrideIsPreserved() {
+    final Properties p = new Properties();
+    p.setProperty(CoreWorkload.READ_PROPORTION_PROPERTY, "0.95");
+    p.setProperty(CoreWorkload.INSERT_PROPORTION_PROPERTY, "0.05");
+    p.setProperty(CoreWorkload.READ_AND_INSERT_PROPERTY, "false");
+    CoreWorkload.applyReadAndInsertProperty(p);
+    assertEquals(p.getProperty(CoreWorkload.READ_AND_INSERT_PROPERTY), "false");
   }
 }
