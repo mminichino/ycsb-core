@@ -154,9 +154,7 @@ public class OneMeasurementRaw extends OneMeasurement {
           String.format("%s,%d,%d", getName(), point.timeStamp(),
               point.value()));
     }
-    if (outputStream != System.out) {
-      outputStream.close();
-    }
+    close();
 
     int totalOps = measurements.size();
     exporter.write(getName(), "Total Operations", totalOps);
@@ -190,6 +188,13 @@ public class OneMeasurementRaw extends OneMeasurement {
     }
 
     exportStatusCounts(exporter);
+  }
+
+  @Override
+  public void close() {
+    if (outputStream != null && outputStream != System.out) {
+      outputStream.close();
+    }
   }
 
   @Override

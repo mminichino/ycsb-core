@@ -216,6 +216,25 @@ public final class Utils {
   }
 
   /**
+   * Per-pass GC counts/times relative to a baseline snapshot from
+   * {@link #getGCStatst()} taken at pass start.
+   */
+  public static Map<String, Long[]> getGCStatsDelta(final Map<String, Long[]> baseline) {
+    final Map<String, Long[]> current = getGCStatst();
+    final Map<String, Long[]> delta = new HashMap<String, Long[]>(current.size());
+    for (final Map.Entry<String, Long[]> entry : current.entrySet()) {
+      final Long[] base = baseline == null ? null : baseline.get(entry.getKey());
+      final long baseCount = base == null ? 0L : base[0];
+      final long baseTime = base == null ? 0L : base[1];
+      delta.put(entry.getKey(), new Long[]{
+          entry.getValue()[0] - baseCount,
+          entry.getValue()[1] - baseTime
+      });
+    }
+    return delta;
+  }
+
+  /**
    * Simple Fisher-Yates array shuffle to randomize discrete sets.
    * @param array The array to randomly shuffle.
    * @return The shuffled array.

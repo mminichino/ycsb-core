@@ -153,11 +153,6 @@ public class Client {
    */
   public static final String LABEL_PROPERTY = "label";
 
-  /**
-   * An optional thread used to track progress and measure JVM stats.
-   */
-  private static StatusThread statusthread = null;
-
   // HTrace integration related constants.
 
   /**
@@ -214,7 +209,8 @@ public class Client {
    *
    * @throws IOException Either failed to write to output stream or failed to close it.
    */
-  private static void exportMeasurements(Properties props, int opcount, long runtime)
+  private static void exportMeasurements(Properties props, int opcount, long runtime,
+                                         StatusThread statusThread, Map<String, Long[]> gcBaseline)
       throws IOException {
     MeasurementsExporter exporter = null;
     try {
@@ -241,8 +237,9 @@ public class Client {
       exporter.write("OVERALL", "RunTime(ms)", runtime);
       double throughput = 1000.0 * (opcount) / (runtime);
       exporter.write("OVERALL", "Throughput(ops/sec)", throughput);
+      exporter.write("OVERALL", "AverageLatency(us)", Measurements.getMeasurements().getAverageLatencyUs());
 
-      final Map<String, Long[]> gcs = Utils.getGCStatst();
+      final Map<String, Long[]> gcs = Utils.getGCStatsDelta(gcBaseline);
       long totalGCCount = 0;
       long totalGCTime = 0;
       for (final Entry<String, Long[]> entry : gcs.entrySet()) {
@@ -257,13 +254,13 @@ public class Client {
 
       exporter.write("TOTAL_GC_TIME", "Time(ms)", totalGCTime);
       exporter.write("TOTAL_GC_TIME_%", "Time(%)", ((double) totalGCTime / runtime) * (double) 100);
-      if (statusthread != null && statusthread.trackJVMStats()) {
-        exporter.write("MAX_MEM_USED", "MBs", statusthread.getMaxUsedMem());
-        exporter.write("MIN_MEM_USED", "MBs", statusthread.getMinUsedMem());
-        exporter.write("MAX_THREADS", "Count", statusthread.getMaxThreads());
-        exporter.write("MIN_THREADS", "Count", statusthread.getMinThreads());
-        exporter.write("MAX_SYS_LOAD_AVG", "Load", statusthread.getMaxLoadAvg());
-        exporter.write("MIN_SYS_LOAD_AVG", "Load", statusthread.getMinLoadAvg());
+      if (statusThread != null && statusThread.trackJVMStats()) {
+        exporter.write("MAX_MEM_USED", "MBs", statusThread.getMaxUsedMem());
+        exporter.write("MIN_MEM_USED", "MBs", statusThread.getMinUsedMem());
+        exporter.write("MAX_THREADS", "Count", statusThread.getMaxThreads());
+        exporter.write("MIN_THREADS", "Count", statusThread.getMinThreads());
+        exporter.write("MAX_SYS_LOAD_AVG", "Load", statusThread.getMaxLoadAvg());
+        exporter.write("MIN_SYS_LOAD_AVG", "Load", statusThread.getMinLoadAvg());
       }
 
       Measurements.getMeasurements().exportMeasurements(exporter);
@@ -303,6 +300,7 @@ public class Client {
     warningthread.start();
 
     Measurements.setProperties(props);
+    Measurements.reset();
 
     Workload workload = getWorkload(props);
 
@@ -316,6 +314,7 @@ public class Client {
     final List<ClientThread> clients = initDb(dbname, props, threadcount, targetperthreadperms,
         workload, tracer, completeLatch);
 
+    StatusThread statusThread = null;
     if (status) {
       boolean standardstatus = false;
       if (props.getProperty(Measurements.MEASUREMENT_TYPE_PROPERTY, "").compareTo("timeseries") == 0) {
@@ -324,15 +323,16 @@ public class Client {
       int statusIntervalSeconds = Integer.parseInt(props.getProperty("status.interval", "10"));
       boolean trackJVMStats = props.getProperty(Measurements.MEASUREMENT_TRACK_JVM_PROPERTY,
           Measurements.MEASUREMENT_TRACK_JVM_PROPERTY_DEFAULT).equals("true");
-      statusthread = new StatusThread(completeLatch, clients, label, standardstatus, statusIntervalSeconds,
+      statusThread = new StatusThread(completeLatch, clients, label, standardstatus, statusIntervalSeconds,
           trackJVMStats);
-      statusthread.start();
+      statusThread.start();
     }
 
     Thread terminator = null;
     long st;
     long en;
     int opsDone;
+    Map<String, Long[]> gcBaseline;
 
     try (final TraceScope span = tracer.newScope(CLIENT_WORKLOAD_SPAN)) {
 
@@ -341,6 +341,7 @@ public class Client {
         threads.put(new Thread(tracer.wrap(client, "ClientThread")), client);
       }
 
+      gcBaseline = Utils.getGCStatst();
       st = System.currentTimeMillis();
 
       for (Thread t : threads.keySet()) {
@@ -373,12 +374,12 @@ public class Client {
           terminator.interrupt();
         }
 
-        if (status) {
+        if (statusThread != null) {
           // wake up status thread if it's asleep
-          statusthread.interrupt();
+          statusThread.interrupt();
           // at this point we assume all the monitored threads are already gone as per above join loop.
           try {
-            statusthread.join();
+            statusThread.join();
           } catch (InterruptedException ignored) {
             // ignored
           }
@@ -394,7 +395,7 @@ public class Client {
 
     try {
       try (final TraceScope span = tracer.newScope(CLIENT_EXPORT_MEASUREMENTS_SPAN)) {
-        exportMeasurements(props, opsDone, en - st);
+        exportMeasurements(props, opsDone, en - st, statusThread, gcBaseline);
       }
     } catch (IOException e) {
       logger.error("Could not export measurements, error: {}", e.getMessage(), e);

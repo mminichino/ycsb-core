@@ -73,4 +73,10 @@ public class TwoInOneMeasurement extends OneMeasurement {
     return count;
   }
 
+  @Override
+  public void close() {
+    thing1.close();
+    thing2.close();
+  }
+
 }
