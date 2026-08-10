@@ -25,6 +25,7 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.util.Properties;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.LongAdder;
 
 /**
  * Collects latency measurements, and reports them when requested.
@@ -70,11 +71,26 @@ public class Measurements {
     return singleton;
   }
 
+  /**
+   * Reset the singleton in place for a new load/run pass.
+   * Clears accumulated measurements and re-applies the properties
+   * last provided to {@link #setProperties(Properties)}.
+   * Identity of the singleton is preserved so external caches of
+   * {@link #getMeasurements()} continue to write to the live object.
+   */
+  public static synchronized void reset() {
+    if (singleton != null) {
+      singleton.reset(measurementproperties);
+    }
+  }
+
   private final ConcurrentHashMap<String, OneMeasurement> opToMesurementMap;
   private final ConcurrentHashMap<String, OneMeasurement> opToIntendedMesurementMap;
-  private final MeasurementType measurementType;
-  private final int measurementInterval;
-  private final Properties props;
+  private final LongAdder operations = new LongAdder();
+  private final LongAdder totalLatencyUs = new LongAdder();
+  private MeasurementType measurementType;
+  private int measurementInterval;
+  private Properties props;
 
   /**
    * Create a new object with the specified properties.
@@ -82,7 +98,28 @@ public class Measurements {
   public Measurements(Properties props) {
     opToMesurementMap = new ConcurrentHashMap<>();
     opToIntendedMesurementMap = new ConcurrentHashMap<>();
+    configureFrom(props);
+  }
 
+  /**
+   * Clear accumulated measurements and reconfigure from {@code props}.
+   * Must be called from the main thread between passes, before workers start.
+   */
+  void reset(Properties props) {
+    for (OneMeasurement measurement : opToMesurementMap.values()) {
+      measurement.close();
+    }
+    for (OneMeasurement measurement : opToIntendedMesurementMap.values()) {
+      measurement.close();
+    }
+    opToMesurementMap.clear();
+    opToIntendedMesurementMap.clear();
+    operations.reset();
+    totalLatencyUs.reset();
+    configureFrom(props);
+  }
+
+  private void configureFrom(Properties props) {
     this.props = props;
 
     String mTypeString = this.props.getProperty(MEASUREMENT_TYPE_PROPERTY, MEASUREMENT_TYPE_PROPERTY_DEFAULT);
@@ -191,6 +228,7 @@ public class Measurements {
     try {
       OneMeasurement m = getOpMeasurement(operation);
       m.measure(latency);
+      recordOverallLatency(latency);
     } catch (java.lang.ArrayIndexOutOfBoundsException e) {
       // This seems like a terribly hacky way to cover up for a bug in the measurement code
       logger.error("ArrayIndexOutOfBoundsException - ignoring and continuing", e);
@@ -208,10 +246,31 @@ public class Measurements {
     try {
       OneMeasurement m = getOpIntendedMeasurement(operation);
       m.measure(latency);
+      // When only intended latencies are recorded, use them for the overall average.
+      if (measurementInterval == 1) {
+        recordOverallLatency(latency);
+      }
     } catch (java.lang.ArrayIndexOutOfBoundsException e) {
       // This seems like a terribly hacky way to cover up for a bug in the measurement code
       logger.error("ArrayIndexOutOfBoundsException - ignoring and continuing", e);
     }
+  }
+
+  private void recordOverallLatency(int latency) {
+    operations.increment();
+    totalLatencyUs.add(latency);
+  }
+
+  /**
+   * Average latency across all operations measured in this pass, in microseconds.
+   * Returns 0 when no operations have been recorded.
+   */
+  public double getAverageLatencyUs() {
+    long ops = operations.sum();
+    if (ops == 0) {
+      return 0.0;
+    }
+    return ((double) totalLatencyUs.sum()) / ((double) ops);
   }
 
   private OneMeasurement getOpMeasurement(String operation) {

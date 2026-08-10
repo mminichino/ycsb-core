@@ -11,15 +11,16 @@ help:
 	@echo "  clean    - Remove build outputs"
 
 build:
+	rm -rf build/
 	$(GRADLEW) build
 
-test:
+test: build
 	$(GRADLEW) test
 
-release: clean
+release: clean build
 	$(GRADLEW) jreleaserRelease
 
-publish: clean
+publish: clean build
 	$(GRADLEW) jreleaserDeploy -PdeployMavenCentral=true
 
 clean:

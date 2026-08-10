@@ -113,9 +113,8 @@ public class OneMeasurementHdrHistogram extends OneMeasurement {
     Histogram intervalHistogram = getIntervalHistogramAndAccumulate();
     if (histogramLogWriter != null) {
       histogramLogWriter.outputIntervalHistogram(intervalHistogram);
-      // we can close now
-      log.close();
     }
+    close();
     exporter.write(getName(), "Operations", totalHistogram.getTotalCount());
     exporter.write(getName(), "AverageLatency(us)", totalHistogram.getMean());
     exporter.write(getName(), "MinLatency(us)", totalHistogram.getMinValue());
@@ -140,6 +139,13 @@ public class OneMeasurementHdrHistogram extends OneMeasurement {
   
         exporter.write(getName(), Integer.toString(value), (double)v.getCountAtValueIteratedTo());
       }
+    }
+  }
+
+  @Override
+  public void close() {
+    if (log != null) {
+      log.close();
     }
   }
 

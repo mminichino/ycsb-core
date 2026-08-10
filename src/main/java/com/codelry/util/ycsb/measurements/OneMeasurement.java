@@ -103,6 +103,15 @@ public abstract class OneMeasurement {
    */
   public abstract void exportMeasurements(MeasurementsExporter exporter) throws IOException;
 
+  /**
+   * Release any resources held by this measurement (e.g. open output streams).
+   * No-op by default; overridden by types that open files.
+   * Safe to call more than once.
+   */
+  public void close() {
+    // no-op
+  }
+
   protected final void exportStatusCounts(MeasurementsExporter exporter) throws IOException {
     for (Map.Entry<Status, AtomicInteger> entry : returncodes.entrySet()) {
       exporter.write(getName(), "Return=" + entry.getKey().getName(), entry.getValue().get());
