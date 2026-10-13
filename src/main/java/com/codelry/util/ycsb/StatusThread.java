@@ -26,6 +26,7 @@ import java.util.Date;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.function.LongSupplier;
 
 /**
  * A thread to periodically show the status of the experiment to reassure you that progress is being made.
@@ -44,6 +45,9 @@ public class StatusThread extends Thread {
 
   // The clients that are running.
   private final List<ClientThread> clients;
+
+  private final LongSupplier opsDoneSupplier;
+  private final LongSupplier opsTodoSupplier;
 
   private final String label;
   private final boolean standardstatus;
@@ -90,6 +94,15 @@ public class StatusThread extends Thread {
   public StatusThread(CountDownLatch completeLatch, List<ClientThread> clients,
                       String label, boolean standardstatus, int statusIntervalSeconds,
                       boolean trackJVMStats) {
+    this(completeLatch, clients, label, standardstatus, statusIntervalSeconds, trackJVMStats, null, null);
+  }
+
+  /**
+   * Creates a new StatusThread with optional ops suppliers (used for shared op budgets).
+   */
+  public StatusThread(CountDownLatch completeLatch, List<ClientThread> clients,
+                      String label, boolean standardstatus, int statusIntervalSeconds,
+                      boolean trackJVMStats, LongSupplier opsDoneSupplier, LongSupplier opsTodoSupplier) {
     this.completeLatch = completeLatch;
     this.clients = clients;
     this.label = label;
@@ -97,6 +110,8 @@ public class StatusThread extends Thread {
     sleeptimeNs = TimeUnit.SECONDS.toNanos(statusIntervalSeconds);
     measurements = Measurements.getMeasurements();
     this.trackJVMStats = trackJVMStats;
+    this.opsDoneSupplier = opsDoneSupplier;
+    this.opsTodoSupplier = opsTodoSupplier;
   }
 
   /**
@@ -148,13 +163,23 @@ public class StatusThread extends Thread {
                             long lastTotalOps) {
     SimpleDateFormat format = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss:SSS");
 
-    long totalops = 0;
-    long todoops = 0;
-
-    // Calculate the total number of operations completed.
-    for (ClientThread t : clients) {
-      totalops += t.getOpsDone();
-      todoops += t.getOpsTodo();
+    long totalops;
+    long todoops;
+    if (opsDoneSupplier != null) {
+      totalops = opsDoneSupplier.getAsLong();
+    } else {
+      totalops = 0;
+      for (ClientThread t : clients) {
+        totalops += t.getOpsDone();
+      }
+    }
+    if (opsTodoSupplier != null) {
+      todoops = opsTodoSupplier.getAsLong();
+    } else {
+      todoops = 0;
+      for (ClientThread t : clients) {
+        todoops += t.getOpsTodo();
+      }
     }
 
 
@@ -174,7 +199,7 @@ public class StatusThread extends Thread {
     if (totalops != 0) {
       msg.append(d.format(curthroughput)).append(" current ops/sec; ");
     }
-    if (todoops != 0) {
+    if (todoops != 0 && throughput > 0) {
       msg.append("est completion in ").append(RemainingFormatter.format(estremaining));
     }
 

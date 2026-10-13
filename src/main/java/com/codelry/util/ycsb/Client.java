@@ -30,7 +30,6 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.util.*;
 import java.util.Map.Entry;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import org.slf4j.Logger;
@@ -117,9 +116,29 @@ public class Client {
   public static final String EXPORT_FILE_PROPERTY = "exportfile";
 
   /**
-   * The number of YCSB client threads to run.
+   * The number of YCSB client threads to run. Set to 0 to enable variable thread count.
    */
   public static final String THREAD_COUNT_PROPERTY = "threadcount";
+
+  /**
+   * Minimum client threads when variable thread count is enabled. Default: CPU count.
+   */
+  public static final String MIN_THREAD_COUNT_PROPERTY = ClientThreadPool.MIN_THREAD_COUNT_PROPERTY;
+
+  /**
+   * Maximum client threads when variable thread count is enabled. Default: 256.
+   */
+  public static final String MAX_THREAD_COUNT_PROPERTY = ClientThreadPool.MAX_THREAD_COUNT_PROPERTY;
+
+  /**
+   * Interval in seconds between variable thread-count adjustments. Default: 10.
+   */
+  public static final String THREAD_ADJUST_INTERVAL_PROPERTY = ClientThreadPool.THREAD_ADJUST_INTERVAL_PROPERTY;
+
+  /**
+   * Target minimum latency in milliseconds for the variable thread-count controller. Default: 1.
+   */
+  public static final String MIN_LATENCY_PROPERTY = ClientThreadPool.MIN_LATENCY_PROPERTY;
 
   /**
    * Indicates how many inserts to do if less than recordcount.
@@ -168,8 +187,8 @@ public class Client {
   public static void usageMessage() {
     logger.info("Usage: java com.codelry.util.ycsb.Client [options]");
     logger.info("Options:");
-    logger.info("  -threads n: execute using n threads (default: 1) - can also be specified as the \n" +
-        "        \"threadcount\" property using -p");
+    logger.info("  -threads n: execute using n threads (default: 1; 0 = variable) - can also be specified\n" +
+        "        as the \"threadcount\" property using -p");
     logger.info("  -target n: attempt to do n operations per second (default: unlimited) - can also\n" +
         "       be specified as the \"target\" property using -p");
     logger.info("  -load:  run the loading phase of the workload");
@@ -210,7 +229,8 @@ public class Client {
    * @throws IOException Either failed to write to output stream or failed to close it.
    */
   private static void exportMeasurements(Properties props, int opcount, long runtime,
-                                         StatusThread statusThread, Map<String, Long[]> gcBaseline)
+                                         StatusThread statusThread, Map<String, Long[]> gcBaseline,
+                                         ClientThreadPool threadPool)
       throws IOException {
     MeasurementsExporter exporter = null;
     try {
@@ -238,6 +258,11 @@ public class Client {
       double throughput = 1000.0 * (opcount) / (runtime);
       exporter.write("OVERALL", "Throughput(ops/sec)", throughput);
       exporter.write("OVERALL", "AverageLatency(us)", Measurements.getMeasurements().getAverageLatencyUs());
+      if (threadPool != null) {
+        exporter.write("OVERALL", "MinThreads", threadPool.getMinClientThreads());
+        exporter.write("OVERALL", "MaxThreads", threadPool.getMaxClientThreads());
+        exporter.write("OVERALL", "AverageThreads", threadPool.getAverageClientThreads());
+      }
 
       final Map<String, Long[]> gcs = Utils.getGCStatsDelta(gcBaseline);
       long totalGCCount = 0;
@@ -288,13 +313,7 @@ public class Client {
     int threadcount = Integer.parseInt(props.getProperty(THREAD_COUNT_PROPERTY, "1"));
     String dbname = props.getProperty(DB_PROPERTY, "com.codelry.util.ycsb.BasicDB");
     int target = Integer.parseInt(props.getProperty(TARGET_PROPERTY, "0"));
-
-    //compute the target throughput
-    double targetperthreadperms = -1;
-    if (target > 0) {
-      double targetperthread = ((double) target) / ((double) threadcount);
-      targetperthreadperms = targetperthread / 1000.0;
-    }
+    boolean dotransactions = Boolean.valueOf(props.getProperty(DO_TRANSACTIONS_PROPERTY, String.valueOf(true)));
 
     Thread warningthread = setupWarningThread();
     warningthread.start();
@@ -308,11 +327,17 @@ public class Client {
 
     initWorkload(props, warningthread, workload, tracer);
 
-    logger.info("Starting test.");
-    final CountDownLatch completeLatch = new CountDownLatch(threadcount);
+    if (dotransactions) {
+      runWarmup(dbname, props, tracer);
+    }
 
-    final List<ClientThread> clients = initDb(dbname, props, threadcount, targetperthreadperms,
-        workload, tracer, completeLatch);
+    int opcount = resolveOpcount(props, dotransactions);
+
+    logger.info("Starting test.");
+    final ClientThreadPool threadPool;
+    try (final TraceScope span = tracer.newScope(CLIENT_INIT_SPAN)) {
+      threadPool = new ClientThreadPool(dbname, props, workload, tracer, threadcount, opcount, target);
+    }
 
     StatusThread statusThread = null;
     if (status) {
@@ -323,8 +348,8 @@ public class Client {
       int statusIntervalSeconds = Integer.parseInt(props.getProperty("status.interval", "10"));
       boolean trackJVMStats = props.getProperty(Measurements.MEASUREMENT_TRACK_JVM_PROPERTY,
           Measurements.MEASUREMENT_TRACK_JVM_PROPERTY_DEFAULT).equals("true");
-      statusThread = new StatusThread(completeLatch, clients, label, standardstatus, statusIntervalSeconds,
-          trackJVMStats);
+      statusThread = new StatusThread(threadPool.getCompleteLatch(), threadPool.getClients(), label,
+          standardstatus, statusIntervalSeconds, trackJVMStats, threadPool::getOpsDone, threadPool::getOpsTodo);
       statusThread.start();
     }
 
@@ -335,35 +360,22 @@ public class Client {
     Map<String, Long[]> gcBaseline;
 
     try (final TraceScope span = tracer.newScope(CLIENT_WORKLOAD_SPAN)) {
-
-      final Map<Thread, ClientThread> threads = new HashMap<>(threadcount);
-      for (ClientThread client : clients) {
-        threads.put(new Thread(tracer.wrap(client, "ClientThread")), client);
-      }
-
       gcBaseline = Utils.getGCStatst();
       st = System.currentTimeMillis();
 
-      for (Thread t : threads.keySet()) {
-        t.start();
+      try {
+        threadPool.start();
+      } catch (UnknownDBException e) {
+        logger.error("Error initializing datastore bindings.", e);
+        System.exit(0);
       }
 
       if (maxExecutionTime > 0) {
-        terminator = new TerminatorThread(maxExecutionTime, threads.keySet(), workload);
+        terminator = new TerminatorThread(maxExecutionTime, threadPool.getThreads(), workload);
         terminator.start();
       }
 
-      opsDone = 0;
-
-      for (Map.Entry<Thread, ClientThread> entry : threads.entrySet()) {
-        try {
-          entry.getKey().join();
-          opsDone += entry.getValue().getOpsDone();
-        } catch (InterruptedException ignored) {
-          // ignored
-        }
-      }
-
+      opsDone = threadPool.awaitCompletion();
       en = System.currentTimeMillis();
     }
 
@@ -395,7 +407,7 @@ public class Client {
 
     try {
       try (final TraceScope span = tracer.newScope(CLIENT_EXPORT_MEASUREMENTS_SPAN)) {
-        exportMeasurements(props, opsDone, en - st, statusThread, gcBaseline);
+        exportMeasurements(props, opsDone, en - st, statusThread, gcBaseline, threadPool);
       }
     } catch (IOException e) {
       logger.error("Could not export measurements, error: {}", e.getMessage(), e);
@@ -404,58 +416,47 @@ public class Client {
 
   }
 
-  private static List<ClientThread> initDb(String dbname, Properties props, int threadcount,
-                                           double targetperthreadperms, Workload workload, Tracer tracer,
-                                           CountDownLatch completeLatch) {
-    boolean initFailed = false;
-    boolean dotransactions = Boolean.valueOf(props.getProperty(DO_TRANSACTIONS_PROPERTY, String.valueOf(true)));
+  static int resolveOpcount(Properties props, boolean dotransactions) {
+    if (dotransactions) {
+      return Integer.parseInt(props.getProperty(OPERATION_COUNT_PROPERTY, "0"));
+    }
+    if (props.containsKey(INSERT_COUNT_PROPERTY)) {
+      return Integer.parseInt(props.getProperty(INSERT_COUNT_PROPERTY, "0"));
+    }
+    return Integer.parseInt(props.getProperty(RECORD_COUNT_PROPERTY, DEFAULT_RECORD_COUNT));
+  }
 
-    final List<ClientThread> clients = new ArrayList<>(threadcount);
-    try (final TraceScope span = tracer.newScope(CLIENT_INIT_SPAN)) {
-      int opcount;
-      if (dotransactions) {
-        opcount = Integer.parseInt(props.getProperty(OPERATION_COUNT_PROPERTY, "0"));
-      } else {
-        if (props.containsKey(INSERT_COUNT_PROPERTY)) {
-          opcount = Integer.parseInt(props.getProperty(INSERT_COUNT_PROPERTY, "0"));
-        } else {
-          opcount = Integer.parseInt(props.getProperty(RECORD_COUNT_PROPERTY, DEFAULT_RECORD_COUNT));
-        }
-      }
-      if (threadcount > opcount && opcount > 0){
-        threadcount = opcount;
-        logger.warn("Warning: the threadcount is bigger than recordcount, the threadcount will be recordcount!");
-      }
-      for (int threadid = 0; threadid < threadcount; threadid++) {
-        DB db;
+  /**
+   * Runs an optional DB warmup before the timed transaction phase. Metrics are recorded as WARMUP
+   * and excluded from OVERALL aggregates; this call is outside the run timer.
+   */
+  static void runWarmup(String dbname, Properties props, Tracer tracer) {
+    DB db = null;
+    try {
+      db = DBFactory.newDB(dbname, props, tracer);
+      db.init();
+      logger.info("Running database warmup...");
+      db.warmup();
+      logger.info("Database warmup complete.");
+    } catch (UnknownDBException e) {
+      logger.error("Unknown DB {} during warmup", dbname);
+      System.exit(0);
+    } catch (DBException e) {
+      logger.error("Warmup failed: {}", e.getMessage(), e);
+      System.exit(0);
+    } finally {
+      if (db != null) {
         try {
-          db = DBFactory.newDB(dbname, props, tracer);
-        } catch (UnknownDBException e) {
-          logger.error("Unknown DB {}", dbname);
-          initFailed = true;
-          break;
+          if (db instanceof DBWrapper) {
+            ((DBWrapper) db).cleanupWithoutMeasurement();
+          } else {
+            db.cleanup();
+          }
+        } catch (DBException e) {
+          logger.warn("Warmup cleanup failed: {}", e.getMessage(), e);
         }
-
-        int threadopcount = opcount / threadcount;
-
-        // ensure correct number of operations, in case opcount is not a multiple of threadcount
-        if (threadid < opcount % threadcount) {
-          ++threadopcount;
-        }
-
-        ClientThread t = new ClientThread(db, dotransactions, workload, props, threadopcount, targetperthreadperms,
-            completeLatch);
-        t.setThreadId(threadid);
-        t.setThreadCount(threadcount);
-        clients.add(t);
-      }
-
-      if (initFailed) {
-        logger.error("Error initializing datastore bindings.");
-        System.exit(0);
       }
     }
-    return clients;
   }
 
   private static Tracer getTracer(Properties props, Workload workload) {
