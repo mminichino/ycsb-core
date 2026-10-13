@@ -9,7 +9,7 @@ plugins {
 import org.jreleaser.model.Active
 
 group = 'com.codelry.util.ycsb'
-version = '0.18.7'
+version = '0.18.8'
 
 repositories {
     mavenCentral()

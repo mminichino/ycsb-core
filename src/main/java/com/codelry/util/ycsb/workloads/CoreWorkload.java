@@ -26,6 +26,7 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * The core benchmark scenario. Represents a set of clients doing simple CRUD operations. The
@@ -688,6 +689,39 @@ public class CoreWorkload extends Workload {
     return null != status && status.isOk();
   }
 
+  @Override
+  public CompletableFuture<Boolean> doInsertAsync(DBReactive db, Object threadstate) {
+    int keynum = keysequence.nextValue().intValue();
+    String dbkey = CoreWorkload.buildKeyName(keynum, zeropadding, orderedinserts);
+    HashMap<String, ByteIterator> values = buildValues(dbkey);
+    return insertWithRetryAsync(db, dbkey, values, 0);
+  }
+
+  private CompletableFuture<Boolean> insertWithRetryAsync(DBReactive db, String dbkey,
+                                                          HashMap<String, ByteIterator> values,
+                                                          int numOfRetries) {
+    return db.insert(table, dbkey, values).thenCompose(status -> {
+      if (status != null && status.isOk()) {
+        return CompletableFuture.completedFuture(true);
+      }
+      if (numOfRetries < insertionRetryLimit) {
+        logger.info("Retrying insertion, retry count: {}", numOfRetries + 1);
+        final int sleepTime = (int) (1000 * insertionRetryInterval * (0.8 + 0.4 * Math.random()));
+        return CompletableFuture.supplyAsync(() -> {
+          try {
+            Thread.sleep(sleepTime);
+          } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+          }
+          return null;
+        }).thenCompose(ignored -> insertWithRetryAsync(db, dbkey, values, numOfRetries + 1));
+      }
+      logger.error("Error inserting, not retrying any more. number of attempts: {} Insertion Retry Limit: {}",
+          numOfRetries + 1, insertionRetryLimit);
+      return CompletableFuture.completedFuture(false);
+    });
+  }
+
   /**
    * Do one transaction operation. Because it will be called concurrently from multiple client
    * threads, this function must be thread safe. However, avoid synchronized, or the threads will block waiting
@@ -719,6 +753,27 @@ public class CoreWorkload extends Workload {
     }
 
     return true;
+  }
+
+  @Override
+  public CompletableFuture<Boolean> doTransactionAsync(DBReactive db, Object threadstate) {
+    String operation = operationchooser.nextString();
+    if (operation == null) {
+      return CompletableFuture.completedFuture(false);
+    }
+
+    switch (operation) {
+    case "READ":
+      return doTransactionReadAsync(db);
+    case "UPDATE":
+      return doTransactionUpdateAsync(db);
+    case "INSERT":
+      return doTransactionInsertAsync(db);
+    case "SCAN":
+      return doTransactionScanAsync(db);
+    default:
+      return doTransactionReadModifyWriteAsync(db);
+    }
   }
 
   /**
@@ -888,6 +943,103 @@ public class CoreWorkload extends Workload {
     } finally {
       transactioninsertkeysequence.acknowledge(keynum);
     }
+  }
+
+  public CompletableFuture<Boolean> doTransactionReadAsync(DBReactive db) {
+    long keynum = nextKeynum();
+    String keyname = CoreWorkload.buildKeyName(keynum, zeropadding, orderedinserts);
+
+    HashSet<String> fields = null;
+    if (!readallfields) {
+      String fieldname = fieldnames.get(fieldchooser.nextValue().intValue());
+      fields = new HashSet<String>();
+      fields.add(fieldname);
+    } else if (dataintegrity || readallfieldsbyname) {
+      fields = new HashSet<String>(fieldnames);
+    }
+
+    final HashMap<String, ByteIterator> cells = new HashMap<String, ByteIterator>();
+    final String keyForVerify = keyname;
+    return db.read(table, keyname, fields, cells).thenApply(status -> {
+      if (dataintegrity) {
+        verifyRow(keyForVerify, cells);
+      }
+      return true;
+    });
+  }
+
+  public CompletableFuture<Boolean> doTransactionReadModifyWriteAsync(DBReactive db) {
+    long keynum = nextKeynum();
+    String keyname = CoreWorkload.buildKeyName(keynum, zeropadding, orderedinserts);
+
+    HashSet<String> fields = null;
+    if (!readallfields) {
+      String fieldname = fieldnames.get(fieldchooser.nextValue().intValue());
+      fields = new HashSet<String>();
+      fields.add(fieldname);
+    }
+
+    final HashMap<String, ByteIterator> values;
+    if (writeallfields) {
+      values = buildValues(keyname);
+    } else {
+      values = buildSingleValue(keyname);
+    }
+
+    final HashMap<String, ByteIterator> cells = new HashMap<String, ByteIterator>();
+    final String keyForVerify = keyname;
+    final long ist = measurements.getIntendedStartTimeNs();
+    final long st = System.nanoTime();
+
+    return db.read(table, keyname, fields, cells).thenCompose(readStatus ->
+        db.update(table, keyname, values).thenApply(updateStatus -> {
+          long en = System.nanoTime();
+          if (dataintegrity) {
+            verifyRow(keyForVerify, cells);
+          }
+          measurements.measure("READ-MODIFY-WRITE", (int) ((en - st) / 1000));
+          measurements.measureIntended("READ-MODIFY-WRITE", (int) ((en - ist) / 1000));
+          return true;
+        }));
+  }
+
+  public CompletableFuture<Boolean> doTransactionScanAsync(DBReactive db) {
+    long keynum = nextKeynum();
+    String startkeyname = CoreWorkload.buildKeyName(keynum, zeropadding, orderedinserts);
+    int len = scanlength.nextValue().intValue();
+
+    HashSet<String> fields = null;
+    if (!readallfields) {
+      String fieldname = fieldnames.get(fieldchooser.nextValue().intValue());
+      fields = new HashSet<String>();
+      fields.add(fieldname);
+    }
+
+    return db.scan(table, startkeyname, len, fields, new Vector<HashMap<String, ByteIterator>>())
+        .thenApply(status -> true);
+  }
+
+  public CompletableFuture<Boolean> doTransactionUpdateAsync(DBReactive db) {
+    long keynum = nextKeynum();
+    String keyname = CoreWorkload.buildKeyName(keynum, zeropadding, orderedinserts);
+
+    HashMap<String, ByteIterator> values;
+    if (writeallfields) {
+      values = buildValues(keyname);
+    } else {
+      values = buildSingleValue(keyname);
+    }
+
+    return db.update(table, keyname, values).thenApply(status -> true);
+  }
+
+  public CompletableFuture<Boolean> doTransactionInsertAsync(DBReactive db) {
+    final long keynum = transactioninsertkeysequence.nextValue();
+    String dbkey = CoreWorkload.buildKeyName(keynum, zeropadding, orderedinserts);
+    HashMap<String, ByteIterator> values = buildValues(dbkey);
+    return db.insert(table, dbkey, values).whenComplete((status, err) ->
+        transactioninsertkeysequence.acknowledge(keynum)
+    ).thenApply(status -> true);
   }
 
   /**

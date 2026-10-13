@@ -34,11 +34,18 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Manages YCSB client worker threads, including optional variable thread-count control.
+ * Manages YCSB client worker threads, including optional variable thread-count control
+ * (sync bindings) or variable concurrency control (reactive bindings).
  *
- * <p>Variable mode is enabled when {@code threadcount=0}. The pool starts at
+ * <p>Sync path: variable mode when {@code threadcount=0}. The pool starts at
  * {@code 4 * availableProcessors} (clamped to min/max), then periodically adjusts:
  * {@code new_limit = current_limit * (min_latency / current_window_latency)}.
+ *
+ * <p>Reactive path (binding extends {@link DBReactive}): worker threads are fixed
+ * (CPU count by default; explicit {@code threadcount > 0} overrides; {@code threadcount=0}
+ * means default CPU count — variable threads are not supported). In-flight operations are
+ * limited by {@code concurrency} (default 256). {@code concurrency=0} enables variable
+ * concurrency using the same latency-gradient controller as variable threads.
  */
 public class ClientThreadPool {
   private static final Logger logger = LoggerFactory.getLogger(ClientThreadPool.class);
@@ -48,32 +55,47 @@ public class ClientThreadPool {
   public static final String THREAD_ADJUST_INTERVAL_PROPERTY = "threadcount.adjustinterval";
   public static final String MIN_LATENCY_PROPERTY = "threadcount.minlatency";
 
+  public static final String CONCURRENCY_PROPERTY = "concurrency";
+  public static final String MIN_CONCURRENCY_PROPERTY = "concurrency.min";
+  public static final String MAX_CONCURRENCY_PROPERTY = "concurrency.max";
+  public static final String CONCURRENCY_ADJUST_INTERVAL_PROPERTY = "concurrency.adjustinterval";
+  public static final String CONCURRENCY_MIN_LATENCY_PROPERTY = "concurrency.minlatency";
+
   public static final String THREAD_ADJUST_INTERVAL_DEFAULT = "10";
   public static final String MAX_THREAD_COUNT_DEFAULT = "256";
   public static final String MIN_LATENCY_MS_DEFAULT = "1";
+  public static final String CONCURRENCY_DEFAULT = "256";
+  public static final String MAX_CONCURRENCY_DEFAULT = "256";
 
   private final String dbname;
   private final Properties props;
   private final Workload workload;
   private final Tracer tracer;
   private final boolean dotransactions;
+  private final boolean reactiveMode;
   private final boolean variableMode;
+  private final boolean variableConcurrencyMode;
   private final int minThreads;
   private final int maxThreads;
+  private final int minConcurrency;
+  private final int maxConcurrency;
   private final long adjustIntervalMs;
   private final double minLatencyUs;
   private final int totalOpcount;
   private final int targetOpsPerSec;
   private final AtomicLong sharedOpsRemaining;
   private final int threadcountForWorkload;
+  private final ConcurrencyLimiter concurrencyLimiter;
 
   private final List<ClientThread> clients = Collections.synchronizedList(new ArrayList<>());
-  private final ConcurrentHashMap<Thread, ClientThread> threads = new ConcurrentHashMap<>();
+  private final List<ReactiveClientThread> reactiveClients = Collections.synchronizedList(new ArrayList<>());
+  private final ConcurrentHashMap<Thread, Object> threads = new ConcurrentHashMap<>();
   private final AtomicInteger nextThreadId = new AtomicInteger(0);
   private final AtomicInteger activeWorkers = new AtomicInteger(0);
   private final CountDownLatch completeLatch = new CountDownLatch(1);
 
   private volatile int currentLimit;
+  private volatile int currentConcurrency;
   private volatile boolean acceptingWork = true;
   private Thread adjusterThread;
 
@@ -81,6 +103,11 @@ public class ClientThreadPool {
   private int maxClientThreads;
   private long threadSampleSum;
   private long threadSampleCount;
+
+  private int minClientConcurrency = Integer.MAX_VALUE;
+  private int maxClientConcurrency;
+  private long concurrencySampleSum;
+  private long concurrencySampleCount;
 
   public ClientThreadPool(String dbname, Properties props, Workload workload, Tracer tracer,
                           int configuredThreadcount, int totalOpcount, int targetOpsPerSec) {
@@ -91,40 +118,101 @@ public class ClientThreadPool {
     this.dotransactions = Boolean.parseBoolean(props.getProperty(Client.DO_TRANSACTIONS_PROPERTY, "true"));
     this.totalOpcount = totalOpcount;
     this.targetOpsPerSec = targetOpsPerSec;
+    this.reactiveMode = DBFactory.isReactiveBinding(dbname);
 
     int cores = Math.max(1, Runtime.getRuntime().availableProcessors());
-    this.variableMode = configuredThreadcount == 0;
-    this.minThreads = Math.max(1, Integer.parseInt(
-        props.getProperty(MIN_THREAD_COUNT_PROPERTY, String.valueOf(cores))));
-    this.maxThreads = Math.max(minThreads, Integer.parseInt(
-        props.getProperty(MAX_THREAD_COUNT_PROPERTY, MAX_THREAD_COUNT_DEFAULT)));
-    this.adjustIntervalMs = TimeUnit.SECONDS.toMillis(Integer.parseInt(
-        props.getProperty(THREAD_ADJUST_INTERVAL_PROPERTY, THREAD_ADJUST_INTERVAL_DEFAULT)));
-    this.minLatencyUs = Double.parseDouble(props.getProperty(MIN_LATENCY_PROPERTY, MIN_LATENCY_MS_DEFAULT)) * 1000.0;
 
-    if (variableMode) {
-      currentLimit = clamp(4 * cores, minThreads, maxThreads);
-      threadcountForWorkload = maxThreads;
-      sharedOpsRemaining = totalOpcount > 0 ? new AtomicLong(totalOpcount) : null;
-      logger.info("Variable thread count enabled: start={}, min={}, max={}, adjustInterval={}s, minLatency={}ms",
-          currentLimit, minThreads, maxThreads, adjustIntervalMs / 1000, minLatencyUs / 1000.0);
-    } else {
-      currentLimit = configuredThreadcount;
-      if (configuredThreadcount > totalOpcount && totalOpcount > 0) {
+    if (reactiveMode) {
+      // Fixed worker threads; variable thread count is not supported.
+      this.variableMode = false;
+      this.minThreads = 1;
+      this.maxThreads = Integer.MAX_VALUE;
+      if (!props.containsKey(Client.THREAD_COUNT_PROPERTY) || configuredThreadcount <= 0) {
+        if (configuredThreadcount == 0 && props.containsKey(Client.THREAD_COUNT_PROPERTY)) {
+          logger.info("Reactive binding: threadcount=0 is ignored (variable threads unsupported); "
+              + "using CPU count ({})", cores);
+        }
+        currentLimit = cores;
+      } else {
+        currentLimit = configuredThreadcount;
+      }
+      if (currentLimit > totalOpcount && totalOpcount > 0) {
         currentLimit = totalOpcount;
         logger.warn("Warning: the threadcount is bigger than recordcount, the threadcount will be recordcount!");
       }
       threadcountForWorkload = currentLimit;
       sharedOpsRemaining = null;
+
+      int configuredConcurrency = Integer.parseInt(
+          props.getProperty(CONCURRENCY_PROPERTY, CONCURRENCY_DEFAULT));
+      this.variableConcurrencyMode = configuredConcurrency == 0;
+      this.minConcurrency = Math.max(1, Integer.parseInt(
+          props.getProperty(MIN_CONCURRENCY_PROPERTY, String.valueOf(cores))));
+      this.maxConcurrency = Math.max(minConcurrency, Integer.parseInt(
+          props.getProperty(MAX_CONCURRENCY_PROPERTY, MAX_CONCURRENCY_DEFAULT)));
+      this.adjustIntervalMs = TimeUnit.SECONDS.toMillis(Integer.parseInt(
+          props.getProperty(CONCURRENCY_ADJUST_INTERVAL_PROPERTY,
+              props.getProperty(THREAD_ADJUST_INTERVAL_PROPERTY, THREAD_ADJUST_INTERVAL_DEFAULT))));
+      this.minLatencyUs = Double.parseDouble(
+          props.getProperty(CONCURRENCY_MIN_LATENCY_PROPERTY,
+              props.getProperty(MIN_LATENCY_PROPERTY, MIN_LATENCY_MS_DEFAULT))) * 1000.0;
+
+      if (variableConcurrencyMode) {
+        currentConcurrency = clamp(4 * cores, minConcurrency, maxConcurrency);
+      } else {
+        currentConcurrency = Math.max(1, configuredConcurrency);
+      }
+      concurrencyLimiter = new ConcurrencyLimiter(currentConcurrency);
+    } else {
+      this.variableConcurrencyMode = false;
+      this.minConcurrency = 1;
+      this.maxConcurrency = 1;
+      this.currentConcurrency = 1;
+      this.concurrencyLimiter = null;
+
+      this.variableMode = configuredThreadcount == 0;
+      this.minThreads = Math.max(1, Integer.parseInt(
+          props.getProperty(MIN_THREAD_COUNT_PROPERTY, String.valueOf(cores))));
+      this.maxThreads = Math.max(minThreads, Integer.parseInt(
+          props.getProperty(MAX_THREAD_COUNT_PROPERTY, MAX_THREAD_COUNT_DEFAULT)));
+      this.adjustIntervalMs = TimeUnit.SECONDS.toMillis(Integer.parseInt(
+          props.getProperty(THREAD_ADJUST_INTERVAL_PROPERTY, THREAD_ADJUST_INTERVAL_DEFAULT)));
+      this.minLatencyUs = Double.parseDouble(props.getProperty(MIN_LATENCY_PROPERTY, MIN_LATENCY_MS_DEFAULT)) * 1000.0;
+
+      if (variableMode) {
+        currentLimit = clamp(4 * cores, minThreads, maxThreads);
+        threadcountForWorkload = maxThreads;
+        sharedOpsRemaining = totalOpcount > 0 ? new AtomicLong(totalOpcount) : null;
+      } else {
+        currentLimit = configuredThreadcount;
+        if (configuredThreadcount > totalOpcount && totalOpcount > 0) {
+          currentLimit = totalOpcount;
+          logger.warn("Warning: the threadcount is bigger than recordcount, the threadcount will be recordcount!");
+        }
+        threadcountForWorkload = currentLimit;
+        sharedOpsRemaining = null;
+      }
     }
+  }
+
+  public boolean isReactiveMode() {
+    return reactiveMode;
   }
 
   public boolean isVariableMode() {
     return variableMode;
   }
 
+  public boolean isVariableConcurrencyMode() {
+    return variableConcurrencyMode;
+  }
+
   public int getCurrentLimit() {
     return currentLimit;
+  }
+
+  public int getCurrentConcurrency() {
+    return currentConcurrency;
   }
 
   public List<ClientThread> getClients() {
@@ -144,9 +232,17 @@ public class ClientThreadPool {
       return Math.max(0L, sharedOpsRemaining.get());
     }
     long todo = 0;
-    synchronized (clients) {
-      for (ClientThread t : clients) {
-        todo += t.getOpsTodo();
+    if (reactiveMode) {
+      synchronized (reactiveClients) {
+        for (ReactiveClientThread t : reactiveClients) {
+          todo += t.getOpsTodo();
+        }
+      }
+    } else {
+      synchronized (clients) {
+        for (ClientThread t : clients) {
+          todo += t.getOpsTodo();
+        }
       }
     }
     return todo;
@@ -154,9 +250,17 @@ public class ClientThreadPool {
 
   public long getOpsDone() {
     long done = 0;
-    synchronized (clients) {
-      for (ClientThread t : clients) {
-        done += t.getOpsDone();
+    if (reactiveMode) {
+      synchronized (reactiveClients) {
+        for (ReactiveClientThread t : reactiveClients) {
+          done += t.getOpsDone();
+        }
+      }
+    } else {
+      synchronized (clients) {
+        for (ClientThread t : clients) {
+          done += t.getOpsDone();
+        }
       }
     }
     return done;
@@ -177,20 +281,68 @@ public class ClientThreadPool {
     return ((double) threadSampleSum) / ((double) threadSampleCount);
   }
 
+  public int getMinClientConcurrency() {
+    return minClientConcurrency == Integer.MAX_VALUE ? 0 : minClientConcurrency;
+  }
+
+  public int getMaxClientConcurrency() {
+    return maxClientConcurrency;
+  }
+
+  public double getAverageClientConcurrency() {
+    if (concurrencySampleCount == 0) {
+      return currentConcurrency;
+    }
+    return ((double) concurrencySampleSum) / ((double) concurrencySampleCount);
+  }
+
   /**
    * Create and start the initial worker threads (and the adjuster when in variable mode).
    */
   public synchronized void start() throws UnknownDBException {
+    logPhaseSettings();
     sampleClientThreads();
-    if (variableMode) {
-      spawnWorkers(currentLimit);
+    if (reactiveMode) {
+      sampleClientConcurrency();
+      spawnFixedReactiveWorkers();
+      if (variableConcurrencyMode) {
+        adjusterThread = new Thread(this::runConcurrencyAdjuster, "ConcurrencyAdjuster");
+        adjusterThread.setDaemon(true);
+        adjusterThread.start();
+      }
     } else {
-      spawnFixedWorkers();
+      if (variableMode) {
+        spawnWorkers(currentLimit);
+      } else {
+        spawnFixedWorkers();
+      }
+      if (variableMode) {
+        adjusterThread = new Thread(this::runAdjuster, "ThreadCountAdjuster");
+        adjusterThread.setDaemon(true);
+        adjusterThread.start();
+      }
     }
+  }
+
+  /**
+   * Log client thread / concurrency settings for the phase about to run (load or transactions).
+   */
+  private void logPhaseSettings() {
+    String phase = dotransactions ? "transactions" : "load";
+    logger.info("Starting {} phase", phase);
+    logger.info("Client threads: {}", currentLimit);
     if (variableMode) {
-      adjusterThread = new Thread(this::runAdjuster, "ThreadCountAdjuster");
-      adjusterThread.setDaemon(true);
-      adjusterThread.start();
+      logger.info("Variable thread count: start={}, min={}, max={}, adjustInterval={}s, minLatency={}ms",
+          currentLimit, minThreads, maxThreads, adjustIntervalMs / 1000, minLatencyUs / 1000.0);
+    }
+    if (reactiveMode) {
+      if (variableConcurrencyMode) {
+        logger.info("Variable concurrency: start={}, min={}, max={}, adjustInterval={}s, minLatency={}ms",
+            currentConcurrency, minConcurrency, maxConcurrency,
+            adjustIntervalMs / 1000, minLatencyUs / 1000.0);
+      } else {
+        logger.info("Concurrency: {}", currentConcurrency);
+      }
     }
   }
 
@@ -247,17 +399,52 @@ public class ClientThreadPool {
         sampleClientThreads();
         continue;
       }
-      double gradient = minLatencyUs / windowLatencyUs;
-      int newLimit = (int) Math.round(currentLimit * gradient);
-      newLimit = clamp(newLimit, minThreads, maxThreads);
+      int newLimit = computeNewLimit(currentLimit, minLatencyUs, windowLatencyUs, minThreads, maxThreads);
       if (newLimit != currentLimit) {
-        logger.info("Adjusting thread limit: {} -> {} (windowLatency={}us, gradient={})",
-            currentLimit, newLimit, String.format("%.2f", windowLatencyUs), String.format("%.4f", gradient));
+        logger.info("Thread count now {} - latency at {} ms",
+            newLimit, String.format("%.2f", windowLatencyUs / 1000.0));
         setLimit(newLimit);
       } else {
         sampleClientThreads();
       }
     }
+  }
+
+  private void runConcurrencyAdjuster() {
+    final Measurements measurements = Measurements.getMeasurements();
+    measurements.getAndResetWindowAverageLatencyUs();
+    while (acceptingWork && completeLatch.getCount() > 0 && !Thread.currentThread().isInterrupted()) {
+      try {
+        Thread.sleep(adjustIntervalMs);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        break;
+      }
+      if (!acceptingWork || completeLatch.getCount() == 0) {
+        break;
+      }
+      double windowLatencyUs = measurements.getAndResetWindowAverageLatencyUs();
+      if (windowLatencyUs <= 0) {
+        sampleClientConcurrency();
+        continue;
+      }
+      int newLimit = computeNewLimit(currentConcurrency, minLatencyUs, windowLatencyUs,
+          minConcurrency, maxConcurrency);
+      if (newLimit != currentConcurrency) {
+        logger.info("Concurrency now {} - latency at {} ms",
+            newLimit, String.format("%.2f", windowLatencyUs / 1000.0));
+        setConcurrencyLimit(newLimit);
+      } else {
+        sampleClientConcurrency();
+      }
+    }
+  }
+
+  private synchronized void setConcurrencyLimit(int newLimit) {
+    newLimit = clamp(newLimit, minConcurrency, maxConcurrency);
+    currentConcurrency = newLimit;
+    concurrencyLimiter.setLimit(newLimit);
+    sampleClientConcurrency();
   }
 
   private synchronized void setLimit(int newLimit) {
@@ -298,6 +485,18 @@ public class ClientThreadPool {
     }
   }
 
+  private void spawnFixedReactiveWorkers() throws UnknownDBException {
+    double targetPerThreadMs = targetPerThreadMs(currentLimit);
+    int threadcount = currentLimit;
+    for (int threadid = 0; threadid < threadcount; threadid++) {
+      int threadopcount = totalOpcount == 0 ? 0 : totalOpcount / threadcount;
+      if (totalOpcount > 0 && threadid < totalOpcount % threadcount) {
+        ++threadopcount;
+      }
+      spawnOneReactive(threadopcount, targetPerThreadMs, threadcount);
+    }
+  }
+
   private void spawnWorkers(int count) throws UnknownDBException {
     if (count <= 0) {
       return;
@@ -321,6 +520,22 @@ public class ClientThreadPool {
 
     activeWorkers.incrementAndGet();
     Thread t = new Thread(tracer.wrap(client, "ClientThread"), "ClientThread-" + threadId);
+    threads.put(t, client);
+    t.start();
+  }
+
+  private void spawnOneReactive(int threadOpcount, double targetPerThreadMs, int workloadThreadcount)
+      throws UnknownDBException {
+    DBReactive db = DBFactory.newDBReactive(dbname, props, tracer);
+    ReactiveClientThread client = new ReactiveClientThread(db, dotransactions, workload, props, threadOpcount,
+        targetPerThreadMs, concurrencyLimiter, sharedOpsRemaining, this::onWorkerFinished);
+    int threadId = nextThreadId.getAndIncrement();
+    client.setThreadId(threadId);
+    client.setThreadCount(workloadThreadcount);
+    reactiveClients.add(client);
+
+    activeWorkers.incrementAndGet();
+    Thread t = new Thread(tracer.wrap(client, "ReactiveClientThread"), "ReactiveClientThread-" + threadId);
     threads.put(t, client);
     t.start();
   }
@@ -357,6 +572,18 @@ public class ClientThreadPool {
     }
     threadSampleSum += n;
     threadSampleCount++;
+  }
+
+  private synchronized void sampleClientConcurrency() {
+    int n = currentConcurrency;
+    if (n < minClientConcurrency) {
+      minClientConcurrency = n;
+    }
+    if (n > maxClientConcurrency) {
+      maxClientConcurrency = n;
+    }
+    concurrencySampleSum += n;
+    concurrencySampleCount++;
   }
 
   private void onWorkerFinished() {
@@ -396,7 +623,7 @@ public class ClientThreadPool {
   }
 
   /**
-   * Compute the next thread limit from the latency gradient controller.
+   * Compute the next thread/concurrency limit from the latency gradient controller.
    */
   static int computeNewLimit(int currentLimit, double minLatencyUs, double currentLatencyUs,
                              int minThreads, int maxThreads) {

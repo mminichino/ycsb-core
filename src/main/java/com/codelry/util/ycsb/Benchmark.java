@@ -118,6 +118,11 @@ public class Benchmark {
         exporter.write("OVERALL", "MinThreads", threadPool.getMinClientThreads());
         exporter.write("OVERALL", "MaxThreads", threadPool.getMaxClientThreads());
         exporter.write("OVERALL", "AverageThreads", threadPool.getAverageClientThreads());
+        if (threadPool.isReactiveMode()) {
+          exporter.write("OVERALL", "MinConcurrency", threadPool.getMinClientConcurrency());
+          exporter.write("OVERALL", "MaxConcurrency", threadPool.getMaxClientConcurrency());
+          exporter.write("OVERALL", "AverageConcurrency", threadPool.getAverageClientConcurrency());
+        }
       }
 
       final Map<String, Long[]> gcs = Utils.getGCStatsDelta(gcBaseline);
