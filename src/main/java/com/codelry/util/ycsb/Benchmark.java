@@ -16,7 +16,6 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
 import java.util.Map.Entry;
-import java.util.concurrent.CountDownLatch;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -78,7 +77,8 @@ public class Benchmark {
   private static final String CLIENT_EXPORT_MEASUREMENTS_SPAN = "Client#export_measurements";
 
   private static void exportMeasurements(Properties props, int opcount, long runtime,
-                                         StatusThread statusThread, Map<String, Long[]> gcBaseline)
+                                         StatusThread statusThread, Map<String, Long[]> gcBaseline,
+                                         ClientThreadPool threadPool)
       throws IOException {
     MeasurementsExporter exporter = null;
     String workloadFileName = props.getProperty(WORKLOAD_NAME_PROPERTY, null);
@@ -114,6 +114,11 @@ public class Benchmark {
       double throughput = 1000.0 * (opcount) / (runtime);
       exporter.write("OVERALL", "Throughput(ops/sec)", throughput);
       exporter.write("OVERALL", "AverageLatency(us)", Measurements.getMeasurements().getAverageLatencyUs());
+      if (threadPool != null) {
+        exporter.write("OVERALL", "MinThreads", threadPool.getMinClientThreads());
+        exporter.write("OVERALL", "MaxThreads", threadPool.getMaxClientThreads());
+        exporter.write("OVERALL", "AverageThreads", threadPool.getAverageClientThreads());
+      }
 
       final Map<String, Long[]> gcs = Utils.getGCStatsDelta(gcBaseline);
       long totalGCCount = 0;
@@ -186,14 +191,8 @@ public class Benchmark {
     testSetup = props.getProperty(TEST_SETUP_PROPERTY, null);
     testCleanup = props.getProperty(TEST_CLEANUP_PROPERTY, null);
     boolean loadMode = props.getProperty(DO_TRANSACTIONS_PROPERTY, "true").equals("false");
+    boolean dotransactions = !loadMode;
     manualMode = props.getProperty(MANUAL_MODE, "false").equals("true");
-
-    //compute the target throughput
-    double targetperthreadperms = -1;
-    if (target > 0) {
-      double targetperthread = ((double) target) / ((double) threadcount);
-      targetperthreadperms = targetperthread / 1000.0;
-    }
 
     if (testSetup != null && loadMode && !manualMode) {
       try {
@@ -216,11 +215,17 @@ public class Benchmark {
 
     initWorkload(props, warningthread, workload, tracer);
 
-    logger.info("Starting benchmark...");
-    final CountDownLatch completeLatch = new CountDownLatch(threadcount);
+    if (dotransactions) {
+      Client.runWarmup(dbname, props, tracer);
+    }
 
-    final List<ClientThread> clients = initDb(dbname, props, threadcount, targetperthreadperms,
-        workload, tracer, completeLatch);
+    int opcount = Client.resolveOpcount(props, dotransactions);
+
+    logger.info("Starting benchmark...");
+    final ClientThreadPool threadPool;
+    try (final TraceScope ignored = tracer.newScope(CLIENT_INIT_SPAN)) {
+      threadPool = new ClientThreadPool(dbname, props, workload, tracer, threadcount, opcount, target);
+    }
 
     StatusThread statusThread = null;
     if (status) {
@@ -228,8 +233,8 @@ public class Benchmark {
       int statusIntervalSeconds = Integer.parseInt(props.getProperty("status.interval", "10"));
       boolean trackJVMStats = props.getProperty(Measurements.MEASUREMENT_TRACK_JVM_PROPERTY,
           Measurements.MEASUREMENT_TRACK_JVM_PROPERTY_DEFAULT).equals("true");
-      statusThread = new StatusThread(completeLatch, clients, label, standardstatus, statusIntervalSeconds,
-          trackJVMStats);
+      statusThread = new StatusThread(threadPool.getCompleteLatch(), threadPool.getClients(), label,
+          standardstatus, statusIntervalSeconds, trackJVMStats, threadPool::getOpsDone, threadPool::getOpsTodo);
       statusThread.start();
     }
 
@@ -240,35 +245,22 @@ public class Benchmark {
     Map<String, Long[]> gcBaseline;
 
     try (final TraceScope ignored1 = tracer.newScope(CLIENT_WORKLOAD_SPAN)) {
-
-      final Map<Thread, ClientThread> threads = new HashMap<>(threadcount);
-      for (ClientThread client : clients) {
-        threads.put(new Thread(tracer.wrap(client, "ClientThread")), client);
-      }
-
       gcBaseline = Utils.getGCStatst();
       st = System.currentTimeMillis();
 
-      for (Thread t : threads.keySet()) {
-        t.start();
+      try {
+        threadPool.start();
+      } catch (UnknownDBException e) {
+        logger.error("Error initializing datastore bindings.", e);
+        System.exit(1);
       }
 
       if (maxExecutionTime > 0) {
-        terminator = new TerminatorThread(maxExecutionTime, threads.keySet(), workload);
+        terminator = new TerminatorThread(maxExecutionTime, threadPool.getThreads(), workload);
         terminator.start();
       }
 
-      opsDone = 0;
-
-      for (Entry<Thread, ClientThread> entry : threads.entrySet()) {
-        try {
-          entry.getKey().join();
-          opsDone += entry.getValue().getOpsDone();
-        } catch (InterruptedException ignored) {
-          // ignored
-        }
-      }
-
+      opsDone = threadPool.awaitCompletion();
       en = System.currentTimeMillis();
     }
 
@@ -299,7 +291,7 @@ public class Benchmark {
 
     try {
       try (final TraceScope ignored = tracer.newScope(CLIENT_EXPORT_MEASUREMENTS_SPAN)) {
-        exportMeasurements(props, opsDone, en - st, statusThread, gcBaseline);
+        exportMeasurements(props, opsDone, en - st, statusThread, gcBaseline, threadPool);
       }
     } catch (IOException e) {
       logger.error("Could not export measurements, error: {}", e.getMessage(), e);
@@ -314,60 +306,6 @@ public class Benchmark {
         System.exit(1);
       }
     }
-  }
-
-  private static List<ClientThread> initDb(String dbname, Properties props, int threadcount,
-                                           double targetperthreadperms, Workload workload, Tracer tracer,
-                                           CountDownLatch completeLatch) {
-    boolean initFailed = false;
-    boolean dotransactions = Boolean.parseBoolean(props.getProperty(DO_TRANSACTIONS_PROPERTY, String.valueOf(true)));
-
-    final List<ClientThread> clients = new ArrayList<>(threadcount);
-    try (final TraceScope ignored = tracer.newScope(CLIENT_INIT_SPAN)) {
-      int opcount;
-      if (dotransactions) {
-        opcount = Integer.parseInt(props.getProperty(OPERATION_COUNT_PROPERTY, "0"));
-      } else {
-        if (props.containsKey(INSERT_COUNT_PROPERTY)) {
-          opcount = Integer.parseInt(props.getProperty(INSERT_COUNT_PROPERTY, "0"));
-        } else {
-          opcount = Integer.parseInt(props.getProperty(RECORD_COUNT_PROPERTY, DEFAULT_RECORD_COUNT));
-        }
-      }
-      if (threadcount > opcount && opcount > 0){
-        threadcount = opcount;
-        logger.warn("Warning: the threadcount is bigger than recordcount, the threadcount will be recordcount!");
-      }
-      for (int threadid = 0; threadid < threadcount; threadid++) {
-        DB db;
-        try {
-          db = DBFactory.newDB(dbname, props, tracer);
-        } catch (UnknownDBException e) {
-          logger.error("Unknown DB {}", dbname);
-          initFailed = true;
-          break;
-        }
-
-        int threadopcount = opcount / threadcount;
-
-        // ensure the correct number of operations, in case opcount is not a multiple of threadcount
-        if (threadid < opcount % threadcount) {
-          ++threadopcount;
-        }
-
-        ClientThread t = new ClientThread(db, dotransactions, workload, props, threadopcount, targetperthreadperms,
-            completeLatch);
-        t.setThreadId(threadid);
-        t.setThreadCount(threadcount);
-        clients.add(t);
-      }
-
-      if (initFailed) {
-        logger.error("Error initializing datastore bindings.");
-        System.exit(1);
-      }
-    }
-    return clients;
   }
 
   private static Tracer getTracer(Properties props, Workload workload) {

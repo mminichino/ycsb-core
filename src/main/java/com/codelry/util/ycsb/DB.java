@@ -78,6 +78,15 @@ public abstract class DB {
   }
 
   /**
+   * Optional database platform-specific warmup. Default is a no-op.
+   * Called once before the transaction/run phase (not load). Warmup time and
+   * metrics are recorded separately as {@code WARMUP} and do not count toward
+   * OVERALL run time or OVERALL latency/ops.
+   */
+  public void warmup() throws DBException {
+  }
+
+  /**
    * Read a record from the database. Each field/value pair from the result will be stored in a HashMap.
    *
    * @param table The name of the table

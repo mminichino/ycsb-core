@@ -56,6 +56,7 @@ public class DBWrapper extends DB {
   private final String scopeStringRead;
   private final String scopeStringScan;
   private final String scopeStringUpdate;
+  private final String scopeStringWarmup;
 
   public DBWrapper(final DB db, final Tracer tracer) {
     this.db = db;
@@ -69,6 +70,7 @@ public class DBWrapper extends DB {
     scopeStringRead = simple + "#read";
     scopeStringScan = simple + "#scan";
     scopeStringUpdate = simple + "#update";
+    scopeStringWarmup = simple + "#warmup";
   }
 
   /**
@@ -124,6 +126,27 @@ public class DBWrapper extends DB {
       long en = System.nanoTime();
       measure("CLEANUP", Status.OK, ist, st, en);
     }
+  }
+
+  /**
+   * Optional platform-specific warmup. Recorded as {@code WARMUP} and excluded from OVERALL aggregates.
+   */
+  public void warmup() throws DBException {
+    try (final TraceScope span = tracer.newScope(scopeStringWarmup)) {
+      long st = System.nanoTime();
+      db.warmup();
+      long en = System.nanoTime();
+      int latencyUs = (int) ((en - st) / 1000);
+      measurements.measure("WARMUP", latencyUs, false);
+      measurements.reportStatus("WARMUP", Status.OK);
+    }
+  }
+
+  /**
+   * Cleanup the underlying DB without recording CLEANUP measurements (used after warmup).
+   */
+  void cleanupWithoutMeasurement() throws DBException {
+    db.cleanup();
   }
 
   /**

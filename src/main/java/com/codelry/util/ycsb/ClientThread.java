@@ -21,6 +21,8 @@ import com.codelry.util.ycsb.measurements.Measurements;
 import java.util.Properties;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
 
 /**
@@ -44,6 +46,9 @@ public class ClientThread implements Runnable {
   private Properties props;
   private long targetOpsTickNs;
   private final Measurements measurements;
+  private final AtomicBoolean stopThread = new AtomicBoolean(false);
+  private final AtomicLong sharedOpsRemaining;
+  private final Runnable onComplete;
 
   /**
    * Constructor.
@@ -58,19 +63,30 @@ public class ClientThread implements Runnable {
    */
   public ClientThread(DB db, boolean dotransactions, Workload workload, Properties props, int opcount,
                       double targetperthreadperms, CountDownLatch completeLatch) {
+    this(db, dotransactions, workload, props, opcount, targetperthreadperms, completeLatch, null, null);
+  }
+
+  /**
+   * Constructor with optional shared operation budget and completion callback.
+   *
+   * @param sharedOpsRemaining shared remaining ops across all client threads; null for per-thread budgets
+   * @param onComplete         optional callback invoked when this thread finishes (after cleanup)
+   */
+  public ClientThread(DB db, boolean dotransactions, Workload workload, Properties props, int opcount,
+                      double targetperthreadperms, CountDownLatch completeLatch,
+                      AtomicLong sharedOpsRemaining, Runnable onComplete) {
     this.db = db;
     this.dotransactions = dotransactions;
     this.workload = workload;
     this.opcount = opcount;
     opsdone = 0;
-    if (targetperthreadperms > 0) {
-      targetOpsPerMs = targetperthreadperms;
-      targetOpsTickNs = (long) (1000000 / targetOpsPerMs);
-    }
+    setTargetOpsPerThreadMs(targetperthreadperms);
     this.props = props;
     measurements = Measurements.getMeasurements();
     spinSleep = Boolean.valueOf(this.props.getProperty("spin.sleep", "false"));
     this.completeLatch = completeLatch;
+    this.sharedOpsRemaining = sharedOpsRemaining;
+    this.onComplete = onComplete;
   }
 
   public void setThreadId(final int threadId) {
@@ -83,6 +99,32 @@ public class ClientThread implements Runnable {
 
   public int getOpsDone() {
     return opsdone;
+  }
+
+  /**
+   * Request that this thread exit after its current operation completes.
+   *
+   * @return true if this call newly requested the stop
+   */
+  public boolean requestThreadStop() {
+    return !stopThread.getAndSet(true);
+  }
+
+  public boolean isThreadStopRequested() {
+    return stopThread.get();
+  }
+
+  /**
+   * Update the per-thread target rate (ops per ms). Used when the thread limit changes.
+   */
+  public synchronized void setTargetOpsPerThreadMs(double targetperthreadperms) {
+    if (targetperthreadperms > 0) {
+      targetOpsPerMs = targetperthreadperms;
+      targetOpsTickNs = (long) (1000000 / targetOpsPerMs);
+    } else {
+      targetOpsPerMs = 0;
+      targetOpsTickNs = 0;
+    }
   }
 
   @Override
@@ -117,7 +159,10 @@ public class ClientThread implements Runnable {
       if (dotransactions) {
         long startTimeNanos = System.nanoTime();
 
-        while (((opcount == 0) || (opsdone < opcount)) && !workload.isStopRequested()) {
+        while (!workload.isStopRequested() && !stopThread.get()) {
+          if (!reserveNextOp()) {
+            break;
+          }
 
           if (!workload.doTransaction(db, workloadstate)) {
             break;
@@ -130,7 +175,10 @@ public class ClientThread implements Runnable {
       } else {
         long startTimeNanos = System.nanoTime();
 
-        while (((opcount == 0) || (opsdone < opcount)) && !workload.isStopRequested()) {
+        while (!workload.isStopRequested() && !stopThread.get()) {
+          if (!reserveNextOp()) {
+            break;
+          }
 
           if (!workload.doInsert(db, workloadstate)) {
             break;
@@ -154,8 +202,28 @@ public class ClientThread implements Runnable {
       e.printStackTrace();
       e.printStackTrace(System.out);
     } finally {
-      completeLatch.countDown();
+      if (completeLatch != null) {
+        completeLatch.countDown();
+      }
+      if (onComplete != null) {
+        onComplete.run();
+      }
     }
+  }
+
+  /**
+   * Reserve the next operation from the per-thread or shared budget.
+   */
+  private boolean reserveNextOp() {
+    if (sharedOpsRemaining != null) {
+      long left = sharedOpsRemaining.getAndDecrement();
+      if (left <= 0) {
+        sharedOpsRemaining.incrementAndGet();
+        return false;
+      }
+      return true;
+    }
+    return (opcount == 0) || (opsdone < opcount);
   }
 
   private static void sleepUntil(long deadline) {
@@ -168,9 +236,15 @@ public class ClientThread implements Runnable {
 
   private void throttleNanos(long startTimeNanos) {
     //throttle the operations
-    if (targetOpsPerMs > 0) {
+    double target;
+    long tickNs;
+    synchronized (this) {
+      target = targetOpsPerMs;
+      tickNs = targetOpsTickNs;
+    }
+    if (target > 0) {
       // delay until next tick
-      long deadline = startTimeNanos + opsdone * targetOpsTickNs;
+      long deadline = startTimeNanos + opsdone * tickNs;
       sleepUntil(deadline);
       measurements.setIntendedStartTimeNs(deadline);
     }
@@ -180,6 +254,10 @@ public class ClientThread implements Runnable {
    * The total amount of work this thread is still expected to do.
    */
   int getOpsTodo() {
+    if (sharedOpsRemaining != null) {
+      // Shared budget is reported once by the pool; individual threads report 0.
+      return 0;
+    }
     int todo = opcount - opsdone;
     return todo < 0 ? 0 : todo;
   }

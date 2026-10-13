@@ -88,6 +88,8 @@ public class Measurements {
   private final ConcurrentHashMap<String, OneMeasurement> opToIntendedMesurementMap;
   private final LongAdder operations = new LongAdder();
   private final LongAdder totalLatencyUs = new LongAdder();
+  private final LongAdder windowOperations = new LongAdder();
+  private final LongAdder windowTotalLatencyUs = new LongAdder();
   private MeasurementType measurementType;
   private int measurementInterval;
   private Properties props;
@@ -116,6 +118,8 @@ public class Measurements {
     opToIntendedMesurementMap.clear();
     operations.reset();
     totalLatencyUs.reset();
+    windowOperations.reset();
+    windowTotalLatencyUs.reset();
     configureFrom(props);
   }
 
@@ -222,13 +226,23 @@ public class Measurements {
    * value.
    */
   public void measure(String operation, int latency) {
+    measure(operation, latency, true);
+  }
+
+  /**
+   * Report a single value of a single metric. When {@code includeInOverall} is false, the sample is stored under
+   * {@code operation} but excluded from OVERALL ops/latency aggregates and the windowed latency tracker.
+   */
+  public void measure(String operation, int latency, boolean includeInOverall) {
     if (measurementInterval == 1) {
       return;
     }
     try {
       OneMeasurement m = getOpMeasurement(operation);
       m.measure(latency);
-      recordOverallLatency(latency);
+      if (includeInOverall) {
+        recordOverallLatency(latency);
+      }
     } catch (java.lang.ArrayIndexOutOfBoundsException e) {
       // This seems like a terribly hacky way to cover up for a bug in the measurement code
       logger.error("ArrayIndexOutOfBoundsException - ignoring and continuing", e);
@@ -259,6 +273,8 @@ public class Measurements {
   private void recordOverallLatency(int latency) {
     operations.increment();
     totalLatencyUs.add(latency);
+    windowOperations.increment();
+    windowTotalLatencyUs.add(latency);
   }
 
   /**
@@ -271,6 +287,19 @@ public class Measurements {
       return 0.0;
     }
     return ((double) totalLatencyUs.sum()) / ((double) ops);
+  }
+
+  /**
+   * Average latency over the current window in microseconds, then resets the window.
+   * Returns 0 when no operations have been recorded in the window.
+   */
+  public double getAndResetWindowAverageLatencyUs() {
+    long ops = windowOperations.sumThenReset();
+    long total = windowTotalLatencyUs.sumThenReset();
+    if (ops == 0) {
+      return 0.0;
+    }
+    return ((double) total) / ((double) ops);
   }
 
   private OneMeasurement getOpMeasurement(String operation) {
