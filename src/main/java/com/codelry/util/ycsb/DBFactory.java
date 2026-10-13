@@ -29,6 +29,18 @@ public final class DBFactory {
     // not used
   }
 
+  /**
+   * Returns true if {@code dbname} names a class that extends {@link DBReactive}.
+   */
+  public static boolean isReactiveBinding(String dbname) {
+    try {
+      Class<?> dbclass = Class.forName(dbname);
+      return DBReactive.class.isAssignableFrom(dbclass);
+    } catch (ClassNotFoundException e) {
+      return false;
+    }
+  }
+
   public static DB newDB(String dbname, Properties properties, final Tracer tracer) throws UnknownDBException {
     ClassLoader classLoader = DBFactory.class.getClassLoader();
 
@@ -48,4 +60,26 @@ public final class DBFactory {
     return new DBWrapper(ret, tracer);
   }
 
+  /**
+   * Create a reactive DB instance wrapped for measurement-on-completion.
+   */
+  public static DBReactive newDBReactive(String dbname, Properties properties, final Tracer tracer)
+      throws UnknownDBException {
+    ClassLoader classLoader = DBFactory.class.getClassLoader();
+
+    DBReactive ret;
+
+    try {
+      Class dbclass = classLoader.loadClass(dbname);
+
+      ret = (DBReactive) dbclass.newInstance();
+    } catch (Exception e) {
+      e.printStackTrace();
+      throw new UnknownDBException("Could not create reactive DB " + dbname);
+    }
+
+    ret.setProperties(properties);
+
+    return new DBWrapperReactive(ret, tracer);
+  }
 }

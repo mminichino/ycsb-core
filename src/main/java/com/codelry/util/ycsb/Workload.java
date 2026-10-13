@@ -17,6 +17,7 @@
 
 package com.codelry.util.ycsb;
 
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.Properties;
 
@@ -104,6 +105,28 @@ public abstract class Workload {
    * traces from a file, return true when there are more to do, false when you are done.
    */
   public abstract boolean doTransaction(DB db, Object threadstate);
+
+  /**
+   * Asynchronous insert for {@link DBReactive} bindings. Default implementation throws;
+   * workloads used with reactive bindings must override.
+   *
+   * @return a future that completes with {@code true} on success, {@code false} to stop the worker
+   */
+  public CompletableFuture<Boolean> doInsertAsync(DBReactive db, Object threadstate) {
+    throw new UnsupportedOperationException(getClass().getName()
+        + " does not support reactive DB bindings; override doInsertAsync");
+  }
+
+  /**
+   * Asynchronous transaction for {@link DBReactive} bindings. Default implementation throws;
+   * workloads used with reactive bindings must override.
+   *
+   * @return a future that completes with {@code true} to continue, {@code false} to stop the worker
+   */
+  public CompletableFuture<Boolean> doTransactionAsync(DBReactive db, Object threadstate) {
+    throw new UnsupportedOperationException(getClass().getName()
+        + " does not support reactive DB bindings; override doTransactionAsync");
+  }
 
   /**
    * Allows scheduling a request to stop the workload.

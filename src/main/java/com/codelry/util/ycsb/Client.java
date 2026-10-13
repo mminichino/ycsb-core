@@ -141,6 +141,34 @@ public class Client {
   public static final String MIN_LATENCY_PROPERTY = ClientThreadPool.MIN_LATENCY_PROPERTY;
 
   /**
+   * Max in-flight operations for reactive ({@link DBReactive}) bindings. Default: 256.
+   * Set to 0 to enable variable concurrency.
+   */
+  public static final String CONCURRENCY_PROPERTY = ClientThreadPool.CONCURRENCY_PROPERTY;
+
+  /**
+   * Minimum concurrency when variable concurrency is enabled. Default: CPU count.
+   */
+  public static final String MIN_CONCURRENCY_PROPERTY = ClientThreadPool.MIN_CONCURRENCY_PROPERTY;
+
+  /**
+   * Maximum concurrency when variable concurrency is enabled. Default: 256.
+   */
+  public static final String MAX_CONCURRENCY_PROPERTY = ClientThreadPool.MAX_CONCURRENCY_PROPERTY;
+
+  /**
+   * Interval in seconds between variable concurrency adjustments. Default: 10.
+   */
+  public static final String CONCURRENCY_ADJUST_INTERVAL_PROPERTY =
+      ClientThreadPool.CONCURRENCY_ADJUST_INTERVAL_PROPERTY;
+
+  /**
+   * Target minimum latency in milliseconds for the variable concurrency controller. Default: 1.
+   */
+  public static final String CONCURRENCY_MIN_LATENCY_PROPERTY =
+      ClientThreadPool.CONCURRENCY_MIN_LATENCY_PROPERTY;
+
+  /**
    * Indicates how many inserts to do if less than recordcount.
    * Useful for partitioning the load among multiple servers if the client is the bottleneck.
    * Additionally workloads should support the "insertstart" property which tells them which record to start at.
@@ -188,9 +216,11 @@ public class Client {
     logger.info("Usage: java com.codelry.util.ycsb.Client [options]");
     logger.info("Options:");
     logger.info("  -threads n: execute using n threads (default: 1; 0 = variable) - can also be specified\n" +
-        "        as the \"threadcount\" property using -p");
+        "        as the \"threadcount\" property using -p. For reactive (DBReactive) bindings, default is\n" +
+        "        CPU count; threadcount=0 means CPU count (variable threads unsupported).");
     logger.info("  -target n: attempt to do n operations per second (default: unlimited) - can also\n" +
         "       be specified as the \"target\" property using -p");
+    logger.info("  Reactive bindings also honor \"concurrency\" (default 256; 0 = variable concurrency).");
     logger.info("  -load:  run the loading phase of the workload");
     logger.info("  -t:  run the transactions phase of the workload (default)");
     logger.info("  -db dbname: specify the name of the DB to use (default: com.codelry.util.ycsb.BasicDB) - \n" +
@@ -262,6 +292,11 @@ public class Client {
         exporter.write("OVERALL", "MinThreads", threadPool.getMinClientThreads());
         exporter.write("OVERALL", "MaxThreads", threadPool.getMaxClientThreads());
         exporter.write("OVERALL", "AverageThreads", threadPool.getAverageClientThreads());
+        if (threadPool.isReactiveMode()) {
+          exporter.write("OVERALL", "MinConcurrency", threadPool.getMinClientConcurrency());
+          exporter.write("OVERALL", "MaxConcurrency", threadPool.getMaxClientConcurrency());
+          exporter.write("OVERALL", "AverageConcurrency", threadPool.getAverageClientConcurrency());
+        }
       }
 
       final Map<String, Long[]> gcs = Utils.getGCStatsDelta(gcBaseline);
@@ -431,6 +466,10 @@ public class Client {
    * and excluded from OVERALL aggregates; this call is outside the run timer.
    */
   static void runWarmup(String dbname, Properties props, Tracer tracer) {
+    if (DBFactory.isReactiveBinding(dbname)) {
+      runWarmupReactive(dbname, props, tracer);
+      return;
+    }
     DB db = null;
     try {
       db = DBFactory.newDB(dbname, props, tracer);
@@ -449,6 +488,35 @@ public class Client {
         try {
           if (db instanceof DBWrapper) {
             ((DBWrapper) db).cleanupWithoutMeasurement();
+          } else {
+            db.cleanup();
+          }
+        } catch (DBException e) {
+          logger.warn("Warmup cleanup failed: {}", e.getMessage(), e);
+        }
+      }
+    }
+  }
+
+  private static void runWarmupReactive(String dbname, Properties props, Tracer tracer) {
+    DBReactive db = null;
+    try {
+      db = DBFactory.newDBReactive(dbname, props, tracer);
+      db.init();
+      logger.info("Running database warmup...");
+      db.warmup();
+      logger.info("Database warmup complete.");
+    } catch (UnknownDBException e) {
+      logger.error("Unknown DB {} during warmup", dbname);
+      System.exit(0);
+    } catch (DBException e) {
+      logger.error("Warmup failed: {}", e.getMessage(), e);
+      System.exit(0);
+    } finally {
+      if (db != null) {
+        try {
+          if (db instanceof DBWrapperReactive) {
+            ((DBWrapperReactive) db).cleanupWithoutMeasurement();
           } else {
             db.cleanup();
           }
